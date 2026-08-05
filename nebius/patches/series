@@ -1,0 +1,5 @@
+# Add one active patch filename per line in application order.
+# Example: NB-0001-short-description.patch
+#
+# NB-0001 is registered but is added here only after its tested Git-format
+# patch has been exported into this directory.

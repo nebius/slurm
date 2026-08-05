@@ -5,8 +5,8 @@ develop, review, test, and carry Nebius-specific patches on top of supported
 upstream Slurm releases.
 
 The [`nebius/`](nebius/README.md) directory documents the downstream patch
-workflow and contains the current portable patch set. The rest of this README
-is the upstream Slurm project documentation.
+workflow and contains the registry of currently maintained Nebius changes.
+The rest of this README is the upstream Slurm project documentation.
 
 # Slurm Workload Manager
 

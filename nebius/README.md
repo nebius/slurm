@@ -249,3 +249,159 @@ example `nebius/**` and the chosen Nebius release-tag pattern. Scheduled
 workflows are a special case: GitHub runs them only from the repository's
 default branch, so a scheduled orchestration workflow belongs on `master` and
 can explicitly check out the release branch it needs to test.
+
+### Initial smoke test
+
+The initial [`Slurm smoke test`](../.github/workflows/slurm-smoke-test.yml)
+workflow is manual while the CI setup is being validated. It creates a
+disposable VM from image `computeimage-e00sphs75y9ej9nw9j`, copies the exact
+selected Git ref to it, builds Slurm, and runs only
+`slurm_unit/common/log-test`. Logs are uploaded as a workflow artifact and the
+VM and its managed boot disk are deleted even when the build or test fails.
+
+Configure the following values in the GitHub `e2e` environment:
+
+| Kind | Name | Purpose |
+| --- | --- | --- |
+| Variable | `NEBIUS_CLI_CONFIG` | Nebius CLI `config.yaml` without the private key |
+| Variable | `SLURM_ATF_PROFILE` | Project, subnet, VM shape, and SSH user |
+| Secret | `NEBIUS_PRIVATE_KEY` | Private key for the selected Nebius CLI profile |
+| Secret | `SLURM_ATF_SSH_PRIVATE_KEY` | Unencrypted OpenSSH key used for the disposable VM |
+| Secret | `SLURM_ATF_DEBUG_SSH_PUBLIC_KEYS` | Optional newline-separated public keys for human debugging |
+
+#### `NEBIUS_CLI_CONFIG` variable
+
+Store the complete Nebius CLI YAML configuration except for the private key.
+The profile name must match the `nebius_cli_profile` workflow input, which
+defaults to `default`:
+
+```yaml
+default: default
+profiles:
+  default:
+    endpoint: api.nebius.cloud
+    auth-type: service account
+    service-account-id: serviceaccount-e00example
+    public-key-id: publickey-e00example
+    parent-id: project-e00example
+```
+
+Do not add `private-key` or `private-key-file-path` to this variable. The
+workflow injects the private key from `NEBIUS_PRIVATE_KEY` into the selected
+profile at runtime.
+
+#### `NEBIUS_PRIVATE_KEY` secret
+
+Store the complete PEM private key belonging to the authorized public-key ID
+from `NEBIUS_CLI_CONFIG`. Nebius accepts PKCS#1 or PKCS#8 PEM keys. A typical
+PKCS#8 value looks like:
+
+```text
+-----BEGIN PRIVATE KEY-----
+base64-encoded-service-account-private-key
+-----END PRIVATE KEY-----
+```
+
+Keep the header, footer, and original line breaks. This is the Nebius service
+account authentication key; it is not an SSH key.
+
+#### `SLURM_ATF_PROFILE` variable
+
+Store the VM placement and shape as YAML:
+
+```yaml
+nebius_project_id: project-e00example
+slurm_atf:
+  subnet_id: vpcsubnet-e00example
+  security_group_id: vpcsecuritygroup-e00example
+  platform: cpu-d3
+  preset: 32vcpu-128gb
+  boot_disk_gib: 512
+  boot_disk_type: network_ssd
+  ssh_user: slurm-atf-ci
+```
+
+Required fields are `nebius_project_id`, `subnet_id`, `platform`, and
+`preset`. `security_group_id` is optional. The defaults for omitted optional
+fields are:
+
+```yaml
+boot_disk_gib: 512
+boot_disk_type: network_ssd
+ssh_user: slurm-atf-ci
+```
+
+`boot_disk_gib` must be a positive integer. `ssh_user` must be a lowercase
+Linux username containing only letters, digits, underscores, or hyphens. The
+compute image does not belong in this variable: the current smoke workflow
+pins `computeimage-e00sphs75y9ej9nw9j` directly.
+
+The effective security group must allow TCP/22 from GitHub-hosted runners.
+The Nebius identity must be allowed to create, inspect, and delete Compute
+instances, managed disks, and dynamic public IP addresses in the selected
+project.
+
+#### `SLURM_ATF_SSH_PRIVATE_KEY` secret
+
+Store one complete, unencrypted OpenSSH private key used only by CI to reach
+the disposable VM:
+
+```text
+-----BEGIN OPENSSH PRIVATE KEY-----
+base64-encoded-openssh-private-key
+-----END OPENSSH PRIVATE KEY-----
+```
+
+Generate a dedicated key pair rather than using a personal key:
+
+```sh
+ssh-keygen -t ed25519 -N '' -C slurm-atf-ci -f ./slurm-atf-ci
+```
+
+Upload the contents of `slurm-atf-ci` to this secret. Do not upload the `.pub`
+file here. The workflow derives the public key and injects it into the VM.
+Because the workflow is non-interactive, this key must not have a passphrase.
+
+#### `SLURM_ATF_DEBUG_SSH_PUBLIC_KEYS` secret
+
+This optional secret contains up to 20 personal **public** keys, one complete
+key per line. Empty content is allowed. Supported formats are `ssh-ed25519`,
+`ssh-rsa`, and `ecdsa-*`:
+
+```text
+ssh-ed25519 AAAA... alice@example
+ssh-ed25519 AAAA... bob@example
+```
+
+Do not put personal private keys in this secret. The workflow validates every
+public-key line before creating the VM and adds the keys to the temporary
+`SLURM_ATF_PROFILE.slurm_atf.ssh_user` account. The job summary prints the VM
+IP and SSH command. Human access is normally useful together with
+`keep_vm_on_failure=true`; otherwise the VM is deleted immediately after the
+test completes.
+
+#### Workflow inputs
+
+`nebius_cli_profile` is a profile name present under
+`NEBIUS_CLI_CONFIG.profiles`; it defaults to `default`. Valid names contain
+letters, digits, dots, underscores, or hyphens.
+
+`keep_vm_on_failure` is a boolean. Keep the default `false` for normal runs.
+Set it to `true` only when someone is ready to connect over SSH and delete the
+retained VM manually after debugging.
+
+After the workflow is present on both `master` and the target release branch,
+run it from the Actions UI and select the release ref. The equivalent GitHub
+CLI command is:
+
+```sh
+gh workflow run slurm-smoke-test.yml \
+  --ref nebius/26.05 \
+  -f nebius_cli_profile=default \
+  -f keep_vm_on_failure=false
+```
+
+Set `keep_vm_on_failure=true` only for intentional SSH debugging and delete
+the retained VM manually afterwards. Once this manual workflow is stable, add
+a `pull_request` trigger for `nebius/**` branches to make it a required merge
+check.

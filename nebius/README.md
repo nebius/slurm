@@ -1,7 +1,7 @@
 # Nebius downstream patches
 
 This directory describes the Nebius-specific changes carried on top of
-upstream Slurm and stores an export of the currently maintained patch set.
+upstream Slurm and tracks the currently maintained patch queue.
 
 ## Repository model
 
@@ -61,7 +61,9 @@ are retained and are not rebased or force-pushed after release.
 
 The `master` branch does not serve as the source base for a downstream Slurm
 release. It holds the upstream development history together with this
-documentation and an export of the current Nebius patch set.
+documentation and the registry of current Nebius changes. The tested commits
+on release branches and release tags are the source of truth; `master` does
+not store generated `.patch` exports.
 
 ## Creating release branches
 
@@ -90,11 +92,23 @@ git push -u origin nebius/26.05
 ```
 
 The new `nebius/26.05` branch is initially identical to
-`upstream/slurm-26.05`. Consult `nebius/patches/series` on `master`, apply the
-active patches in that order starting with `NB-0001`, and submit them to
-`nebius/26.05` through reviewed pull requests. The metadata and exported
-patches remain on `master`; they do not need to be copied into the release
-branch.
+`upstream/slurm-26.05`. The first pull request always synchronizes the current
+documentation and tests from `master`:
+
+```sh
+git fetch origin
+git switch -c patch/NB-0001-sync-docs-and-tests origin/nebius/26.05
+```
+
+Bring the applicable documentation, test suite, and CI workflow files from
+`origin/master` into this branch, review the resulting diff, run the tests,
+and open a pull request into `nebius/26.05`. This pull request establishes the
+common test baseline for all subsequent Nebius patches on the release.
+
+After `NB-0001` is merged, create each remaining `patch/NB-*` branch from the
+updated `origin/nebius/26.05`. Apply patches in the order recorded in
+`PATCHES.md` and submit each logical change through a separate reviewed pull
+request.
 
 Repeat the same process when a new upstream release appears, substituting its
 version in every branch name:
@@ -111,7 +125,7 @@ git push -u origin nebius/26.11
 Never create a new `nebius/<release>` branch from `master` or from the
 previous `nebius/<release>` branch. Starting from the matching upstream branch
 prevents source changes from an older Slurm release from leaking into the new
-one. Port only the active Nebius patches, one by one and in series order.
+one. Port only the active Nebius patches, one by one and in registry order.
 
 ## Syncing an upstream patch release
 
@@ -155,34 +169,30 @@ An active patch is represented by:
 
 - one logical commit, or a small and clearly identified commit series, on
   each applicable `nebius/<release>` branch;
-- a Git-format patch in [`patches/`](patches/);
+- a standardized description in [`patches/`](patches/README.md) explaining
+  what the patch changes, why Nebius carries it, and how to validate and port
+  it;
 - an entry in [`PATCHES.md`](PATCHES.md) describing dependencies, upstream
   status, and supported Slurm releases.
 
-Patch filenames begin with their identifier, for example:
+Rows in `PATCHES.md` are kept in application order. No generated `.patch`
+files are maintained on `master`, because they can become stale and are not
+used to build or test releases. The Markdown files under `patches/` describe
+logical changes; tested commits and tags remain the implementation source of
+truth.
 
-```text
-NB-0001-topology-configuration.patch
-NB-0002-gpu-accounting.patch
-```
-
-The ordered list in [`patches/series`](patches/series) is authoritative when
-patches depend on one another. Patch files are portable snapshots; commits on
-the release branches remain the source of truth for development and review.
-
-`NB-0001` is reserved for backporting the test suite from upstream `master`.
-It is the first patch in every downstream queue so subsequent Nebius patches
-can add code and tests against the same test baseline. The logical patch and
-its identifier stay the same across releases. Its generated patch file may
-still require a release-specific refresh when the target release already
-contains some of the tests or surrounding upstream code changes.
+`NB-0001` is reserved for synchronizing the current documentation and test
+suite from upstream `master`. It is the first pull request in every downstream
+queue so subsequent Nebius patches can add code and tests against the same
+baseline. Keep the logical patch and its identifier the same across releases,
+even when some files or conflict resolutions differ.
 
 ## Developing a patch
 
 Start work from the downstream branch for the target release:
 
 ```sh
-git switch -c patch/NB-0001-short-description origin/nebius/26.05
+git switch -c patch/NB-0002-short-description origin/nebius/26.05
 ```
 
 Submit the branch as a pull request into `nebius/26.05`. Keep unrelated
@@ -203,11 +213,12 @@ git switch -c port/26.11 upstream/slurm-26.11
 ```
 
 Cherry-pick the active patches from the most recent supported Nebius release
-in the order recorded in `patches/series`:
+in the order recorded in `PATCHES.md`. Create and merge `NB-0001` first, then
+port the remaining patch commits:
 
 ```sh
-git cherry-pick -x <NB-0001-commit>
 git cherry-pick -x <NB-0002-commit>
+git cherry-pick -x <NB-0003-commit>
 ```
 
 Resolve and test each patch separately. Port sequentially between releases
@@ -215,26 +226,26 @@ Resolve and test each patch separately. Port sequentially between releases
 repeated unnecessarily.
 
 When an upstream release already contains a patch, do not apply it again.
-Mark it as `upstream` in `PATCHES.md` and remove it from `patches/series` when
-the oldest supported release no longer requires it.
+Mark it as `upstream` in `PATCHES.md` and remove it from the active registry
+when the oldest supported release no longer requires it.
 
 After the complete queue passes CI, publish it as the new
 `nebius/<release>` branch. Do not rewrite older release branches.
 
-## Updating the exported patch set
+## CI workflows on release branches
 
-After a patch is accepted or ported, regenerate its Git-format patch from the
-tested downstream commit, update `patches/series`, and update its row in
-`PATCHES.md`. Review these three changes together so the exported set cannot
-silently diverge from the release branches.
+GitHub Actions workflow files used to build or test a release must be present
+in that release branch. Keeping them only on `master` is not sufficient for
+pushes to `nebius/<release>`, tag builds, or pull requests targeting the
+release branch.
 
-For example, a single commit can be exported with:
+Therefore the first `NB-0001` pull request for each release should also copy
+the applicable `.github/workflows/` files from `master`. Keep those workflow
+files versioned with the release code so a release tag contains both the exact
+source and the exact CI definition that validated it.
 
-```sh
-git format-patch -1 <commit> --stdout > \
-  nebius/patches/NB-0001-short-description.patch
-```
-
-Never edit the same change independently in both a release branch and its
-exported patch file. Make the source change on the release branch, test it,
-and then regenerate the export.
+Configure the workflow triggers to cover downstream branches and tags, for
+example `nebius/**` and the chosen Nebius release-tag pattern. Scheduled
+workflows are a special case: GitHub runs them only from the repository's
+default branch, so a scheduled orchestration workflow belongs on `master` and
+can explicitly check out the release branch it needs to test.

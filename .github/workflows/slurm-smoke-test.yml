@@ -261,7 +261,13 @@ jobs:
               CFLAGS='-O2 -g3 -fno-omit-frame-pointer'
 
           make -j"$(nproc)"
-          make -C testsuite/slurm_unit/common check TESTS=log-test
+          # Invoke the current directory's Automake test harness directly.
+          # The recursive `check` target would pass TESTS=log-test into every
+          # SUBDIR, where no test with that name exists.
+          make -C testsuite/slurm_unit/common \
+            check-TESTS \
+            TESTS=log-test \
+            check_PROGRAMS=log-test
           REMOTE
 
       - if: always() && steps.wait_vm.outcome == 'success'

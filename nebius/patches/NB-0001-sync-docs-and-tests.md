@@ -34,7 +34,9 @@ reproducible.
 The patch includes:
 
 - current applicable documentation from `master`;
-- the current Slurm test suite from `master`;
+- the complete current Slurm `testsuite/` tree from `master`, including the
+  Python wrappers, Expect tests, common runner, helper libraries, and unit
+  tests;
 - CI workflow files required to build and test the release branch and its
   tags;
 - `nebius/ci/atf/baselines/<release>.txt`, pointing to the immutable vanilla

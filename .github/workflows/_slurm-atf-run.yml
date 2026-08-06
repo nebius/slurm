@@ -169,8 +169,8 @@ jobs:
             grep -Fq "${profile_case}" "${configure_script}"
             grep -Fq "${profile_error}" "${configure_script}"
             sed -i \
-              -e 's|generic | b200) ;;|generic | b200 | h200) ;;|' \
-              -e 's|use generic or b200|use generic, b200, or h200|' \
+              -e 's#generic | b200) ;;#generic | b200 | h200) ;;#' \
+              -e 's#use generic or b200#use generic, b200, or h200#' \
               "${configure_script}"
             install -m 0644 tests/nebius/ci/atf/config/slurm-h200.conf \
               "${config_dir}/slurm-h200.conf"

@@ -1,0 +1,256 @@
+name: Slurm ATF patch comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_line:
+        description: Slurm release line, for example 26.05
+        required: true
+        default: "26.05"
+        type: string
+      baseline_tag:
+        description: Immutable baseline tag; empty reads the release pointer file
+        required: false
+        default: ""
+        type: string
+      nebius_cli_profile:
+        description: Profile name inside NEBIUS_CLI_CONFIG
+        required: true
+        default: default
+        type: string
+      keep_vm_on_failure:
+        description: Keep the VM after an infrastructure failure for SSH debugging
+        required: true
+        default: false
+        type: boolean
+  pull_request:
+    branches:
+      - nebius/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: slurm-atf-candidate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Resolve the immutable baseline
+    runs-on: ubuntu-24.04
+    outputs:
+      baseline_tag: ${{ steps.baseline.outputs.baseline_tag }}
+      release_line: ${{ steps.baseline.outputs.release_line }}
+      tests_commit: ${{ steps.baseline.outputs.tests_commit }}
+    steps:
+      - name: Checkout the candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - if: github.event_name == 'pull_request'
+        name: Checkout the target release baseline pointer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref }}
+          path: target-release
+          fetch-depth: 1
+          persist-credentials: false
+
+      - id: baseline
+        name: Validate the selected baseline
+        env:
+          DISPATCH_BASELINE_TAG: ${{ inputs.baseline_tag }}
+          DISPATCH_RELEASE_LINE: ${{ inputs.release_line }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == pull_request ]]; then
+            release_line="${GITHUB_BASE_REF#nebius/}"
+            test "${release_line}" != "${GITHUB_BASE_REF}"
+          else
+            release_line="${DISPATCH_RELEASE_LINE}"
+          fi
+          [[ "${release_line}" =~ ^[0-9]+\.[0-9]+$ ]]
+
+          pointer="nebius/ci/atf/baselines/${release_line}.txt"
+          baseline_tag="${DISPATCH_BASELINE_TAG}"
+          if [[ -z "${baseline_tag}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == pull_request ]]; then
+              test -s "target-release/${pointer}"
+              baseline_tag="$(<"target-release/${pointer}")"
+            else
+              test -s "${pointer}"
+              baseline_tag="$(<"${pointer}")"
+            fi
+          fi
+          [[ "${baseline_tag}" =~ ^slurm-atf-baseline-[0-9]+\.[0-9]+-[0-9a-f]{64}$ ]]
+          test "${baseline_tag%-*}" = "slurm-atf-baseline-${release_line}"
+
+          mkdir -p baseline-assets baseline-evidence
+          gh release download "${baseline_tag}" \
+            --pattern "${baseline_tag}.tar.gz" \
+            --pattern "${baseline_tag}.tar.gz.sha256" \
+            --pattern "${baseline_tag}.json" \
+            --dir baseline-assets
+          (
+            cd baseline-assets
+            sha256sum -c "${baseline_tag}.tar.gz.sha256"
+          )
+          descriptor="baseline-assets/${baseline_tag}.json"
+          baseline_key="${baseline_tag##*-}"
+          test "$(jq -er '.release_tag' "${descriptor}")" = "${baseline_tag}"
+          test "$(jq -er '.baseline_key' "${descriptor}")" = "${baseline_key}"
+          test "$(jq -er '.run.release_line' "${descriptor}")" = "${release_line}"
+          test "$(jq -er '.archive' "${descriptor}")" = "${baseline_tag}.tar.gz"
+          test "$(jq -er '.archive_sha256' "${descriptor}")" = \
+            "$(awk '{print $1}' "baseline-assets/${baseline_tag}.tar.gz.sha256")"
+          test "$(jq -cS '.identity' "${descriptor}" | sha256sum | awk '{print $1}')" = \
+            "${baseline_key}"
+          tar -xzf "baseline-assets/${baseline_tag}.tar.gz" -C baseline-evidence
+
+          diff -u \
+            <(jq -S '.run' "${descriptor}") \
+            <(jq -S . baseline-evidence/run-metadata.json)
+
+          baseline_source="$(jq -er '.source.commit' baseline-evidence/run-metadata.json)"
+          tests_commit="$(jq -er '.tests.commit' baseline-evidence/run-metadata.json)"
+          upstream_commit="$(jq -er '.upstream_commit' "${descriptor}")"
+          [[ "${baseline_source}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${tests_commit}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${upstream_commit}" =~ ^[0-9a-f]{40}$ ]]
+          test "$(jq -er '.kind' baseline-evidence/run-metadata.json)" = baseline
+          test "$(jq -er '.vm.image_id' baseline-evidence/run-metadata.json)" = computeimage-e00sphs75y9ej9nw9j
+          test "$(jq -er '.result.junit_sha256' baseline-evidence/run-metadata.json)" = \
+            "$(sha256sum baseline-evidence/junit.xml | awk '{print $1}')"
+          git merge-base --is-ancestor "${upstream_commit}" HEAD
+
+          {
+            echo "baseline_tag=${baseline_tag}"
+            echo "release_line=${release_line}"
+            echo "tests_commit=${tests_commit}"
+          } >>"${GITHUB_OUTPUT}"
+          {
+            echo "### Patch comparison input"
+            echo
+            echo "- Baseline: \`${baseline_tag}\`"
+            echo "- Clean upstream: \`${upstream_commit}\`"
+            echo "- Baseline source: \`${baseline_source}\`"
+            echo "- Common tests: \`${tests_commit}\`"
+            echo "- Candidate: \`$(git rev-parse HEAD)\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  run:
+    name: Run the candidate suite
+    needs: prepare
+    uses: ./.github/workflows/_slurm-atf-run.yml
+    with:
+      run_kind: candidate
+      release_line: ${{ needs.prepare.outputs.release_line }}
+      tests_ref: ${{ needs.prepare.outputs.tests_commit }}
+      nebius_cli_profile: ${{ inputs.nebius_cli_profile || 'default' }}
+      keep_vm_on_failure: ${{ inputs.keep_vm_on_failure || false }}
+    secrets: inherit
+
+  compare:
+    name: Compare every testcase with vanilla
+    needs:
+      - prepare
+      - run
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout the pinned comparison tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.tests_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download candidate evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.run.outputs.artifact_name }}
+          path: candidate-evidence
+
+      - id: comparison
+        name: Validate provenance and compare JUnit reports
+        continue-on-error: true
+        env:
+          BASELINE_TAG: ${{ needs.prepare.outputs.baseline_tag }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_LINE: ${{ needs.prepare.outputs.release_line }}
+        run: |
+          set -euo pipefail
+          mkdir -p baseline-assets baseline-evidence comparison
+          gh release download "${BASELINE_TAG}" \
+            --pattern "${BASELINE_TAG}.tar.gz" \
+            --pattern "${BASELINE_TAG}.tar.gz.sha256" \
+            --pattern "${BASELINE_TAG}.json" \
+            --dir baseline-assets
+          (
+            cd baseline-assets
+            sha256sum -c "${BASELINE_TAG}.tar.gz.sha256"
+          )
+          descriptor="baseline-assets/${BASELINE_TAG}.json"
+          test "$(jq -er '.release_tag' "${descriptor}")" = "${BASELINE_TAG}"
+          test "$(jq -er '.archive_sha256' "${descriptor}")" = \
+            "$(awk '{print $1}' "baseline-assets/${BASELINE_TAG}.tar.gz.sha256")"
+          tar -xzf "baseline-assets/${BASELINE_TAG}.tar.gz" -C baseline-evidence
+
+          diff -u \
+            <(jq -S '.run' "${descriptor}") \
+            <(jq -S . baseline-evidence/run-metadata.json)
+
+          baseline=baseline-evidence/run-metadata.json
+          candidate=candidate-evidence/run-metadata.json
+          test "$(jq -er '.kind' "${baseline}")" = baseline
+          test "$(jq -er '.kind' "${candidate}")" = candidate
+          test "$(jq -er '.release_line' "${baseline}")" = "${RELEASE_LINE}"
+          test "$(jq -er '.release_line' "${candidate}")" = "${RELEASE_LINE}"
+          for query in \
+            '.tests.commit' \
+            '.infrastructure.repository' \
+            '.infrastructure.commit' \
+            '.vm.image_id' \
+            '.vm.shape' \
+            '.vm.atf_profile'; do
+            test "$(jq -er "${query}" "${baseline}")" = \
+              "$(jq -er "${query}" "${candidate}")"
+          done
+          test "$(jq -er '.result.junit_sha256' "${baseline}")" = \
+            "$(sha256sum baseline-evidence/junit.xml | awk '{print $1}')"
+          test "$(jq -er '.result.junit_sha256' "${candidate}")" = \
+            "$(sha256sum candidate-evidence/junit.xml | awk '{print $1}')"
+          diff -u \
+            <(jq -S . baseline-evidence/image-metadata.json) \
+            <(jq -S . candidate-evidence/image-metadata.json)
+
+          cp "baseline-assets/${BASELINE_TAG}.json" comparison/baseline.json
+          cp "${baseline}" comparison/baseline-run-metadata.json
+          cp "${candidate}" comparison/candidate-run-metadata.json
+          set +e
+          python3 nebius/ci/atf/compare_junit.py \
+            baseline-evidence/junit.xml \
+            candidate-evidence/junit.xml \
+            --json comparison/comparison.json \
+            --markdown comparison/comparison.md
+          status=$?
+          set -e
+          cat comparison/comparison.md >>"${GITHUB_STEP_SUMMARY}"
+          exit "${status}"
+
+      - if: always()
+        name: Upload the A/B comparison
+        uses: actions/upload-artifact@v7
+        with:
+          name: slurm-atf-comparison-${{ github.run_id }}-${{ github.run_attempt }}
+          path: comparison/
+          if-no-files-found: error
+          retention-days: 30
+
+      - if: always() && steps.comparison.outcome != 'success'
+        name: Fail on a changed or incomplete test outcome
+        run: |
+          echo "Candidate does not match its immutable vanilla ATF baseline" >&2
+          exit 1

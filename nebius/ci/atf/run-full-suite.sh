@@ -33,7 +33,8 @@ jobs="${BUILD_JOBS:-$(nproc)}"
 [[ "${release_line}" =~ ^[0-9]+\.[0-9]+$ ]]
 [[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]
 [[ "${tests_commit}" =~ ^[0-9a-f]{40}$ ]]
-[[ "${atf_profile}" == generic || "${atf_profile}" == b200 ]]
+[[ "${atf_profile}" == generic || "${atf_profile}" == b200 || \
+	"${atf_profile}" == h200 ]]
 [[ "${jobs}" =~ ^[1-9][0-9]*$ ]]
 
 sudo test -f /etc/slurm-atf-disposable
@@ -58,6 +59,24 @@ jq -e '
   .stack.openmpi_tag == "v5.0.9" and
   .stack.mpich_version == "5.0.1"
 ' /etc/slurm-atf-image.json >/dev/null
+
+if [[ "${atf_profile}" == h200 ]]; then
+	command -v nvidia-smi >/dev/null
+	test -x /usr/local/cuda/bin/nvcc
+	test -f /usr/local/cuda/include/nvml.h
+	jq -e '
+	  .gpu.profile == "h200" and
+	  .gpu.count == 8 and
+	  .gpu.product == "NVIDIA H200"
+	' /etc/slurm-atf-image.json >/dev/null
+	mapfile -t gpu_names < <(
+		nvidia-smi --query-gpu=name --format=csv,noheader
+	)
+	((${#gpu_names[@]} == 8))
+	for gpu_name in "${gpu_names[@]}"; do
+		[[ "${gpu_name}" == *H200* ]]
+	done
+fi
 requirements_sha256="$(sha256sum "${infra_dir}/requirements.lock" | awk '{print $1}')"
 test "${requirements_sha256}" = \
 	"$(jq -er '.python_requirements_sha256' /etc/slurm-atf-image.json)"

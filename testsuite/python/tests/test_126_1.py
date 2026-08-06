@@ -82,6 +82,12 @@ def setup():
 
     # Gather a list of nodes that meet the RealMemory Requirement (node_list)
     atf.require_nodes(4, [("RealMemory", max_mem_node + 1)])
+    # require_nodes() treats RealMemory as a lower bound.  These checks need
+    # one CPU and exactly 2 MB so an oversized per-CPU request cannot be
+    # normalized into extra CPUs and accepted on a generic test node.
+    for node_name in ("node1", "node2", "node3", "node4"):
+        atf.set_node_parameter(node_name, "CPUs", 1)
+        atf.set_node_parameter(node_name, "RealMemory", max_mem_node + 1)
 
     p1_node_str = "node1,node2"
     atf.require_config_parameter(

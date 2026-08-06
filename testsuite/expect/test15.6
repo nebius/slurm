@@ -53,6 +53,10 @@ expect {
 		set job_id $expect_out(1,string)
 		exp_continue
 	}
+	-re "verbose +: +($number)" {
+		set verbosity $expect_out(1,string)
+		exp_continue
+	}
 	-re "debug($number)" {
 		if {$verbosity < 3} {
 			set verbosity 3

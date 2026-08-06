@@ -17,10 +17,11 @@ def setup():
     atf.require_nodes(
         1,
         [
-            ("CPUS", box["CPUs"]),
+            ("CPUs", int(box["CPUs"])),
+            ("RealMemory", int(box["RealMemory"])),
             ("Sockets", int(box["Boards"]) * int(box["SocketsPerBoard"])),
-            ("CoresPerSocket", box["CoresPerSocket"]),
-            ("ThreadsPerCore", box["ThreadsPerCore"]),
+            ("CoresPerSocket", int(box["CoresPerSocket"])),
+            ("ThreadsPerCore", int(box["ThreadsPerCore"])),
         ],
     )
     atf.require_slurm_running()

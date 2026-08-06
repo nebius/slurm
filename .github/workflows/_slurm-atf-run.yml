@@ -23,6 +23,11 @@ on:
         required: false
         default: generic
         type: string
+      expected_vm_shape:
+        description: Optional exact VM shape required by immutable baseline metadata
+        required: false
+        default: ""
+        type: string
       nebius_cli_profile:
         required: false
         default: default
@@ -64,7 +69,7 @@ jobs:
       infra_commit: ${{ steps.checkout_metadata.outputs.infra_commit }}
       vm_shape: ${{ steps.profile.outputs.vm_shape }}
     env:
-      ATF_CLOUD_PROFILE: ${{ vars.SLURM_ATF_PROFILE }}
+      ATF_CLOUD_PROFILE: ${{ inputs.atf_profile == 'h200' && vars.SLURM_ATF_H200_PROFILE || vars.SLURM_ATF_PROFILE }}
       NEBIUS_CLI_VERSION: 0.12.253
       NEBIUS_CLI_PROFILE: ${{ inputs.nebius_cli_profile }}
       NEBIUS_VM_IMAGE_ID: ${{ inputs.image_id }}
@@ -140,6 +145,7 @@ jobs:
           set -euo pipefail
           configure_script=external-infra/slurm-atf/infra/configure-atf.sh
           generic_config=external-infra/slurm-atf/infra/config/slurm-generic.conf
+          config_dir=external-infra/slurm-atf/infra/config
           expected='sudo "${root}/venv/bin/pip" install -r "${script_dir}/requirements.lock"'
           grep -Fxq "${expected}" "${configure_script}"
           sed -i \
@@ -152,6 +158,21 @@ jobs:
             's|Port=7001 CPUs=4 RealMemory=32768|Port=7001 CPUs=1 RealMemory=32768|' \
             "${generic_config}"
 
+          if [[ "${{ inputs.atf_profile }}" == h200 ]]; then
+            profile_case='generic | b200) ;;'
+            profile_error='echo "Unsupported SLURM_ATF_PROFILE=${profile}; use generic or b200" >&2'
+            grep -Fq "${profile_case}" "${configure_script}"
+            grep -Fq "${profile_error}" "${configure_script}"
+            sed -i \
+              -e 's|generic | b200) ;;|generic | b200 | h200) ;;|' \
+              -e 's|use generic or b200|use generic, b200, or h200|' \
+              "${configure_script}"
+            install -m 0644 tests/nebius/ci/atf/config/slurm-h200.conf \
+              "${config_dir}/slurm-h200.conf"
+            install -m 0644 tests/nebius/ci/atf/config/gres-h200.conf \
+              "${config_dir}/gres-h200.conf"
+          fi
+
       - name: Install yq
         uses: frenck/action-setup-yq@c4b5be8b4a215c536a41d436757d9feb92836d4f # v1.0.2
         with:
@@ -163,9 +184,11 @@ jobs:
           set -euo pipefail
           [[ "${{ inputs.run_kind }}" == baseline || "${{ inputs.run_kind }}" == candidate ]]
           [[ "${{ inputs.release_line }}" =~ ^[0-9]+\.[0-9]+$ ]]
-          [[ "${{ inputs.atf_profile }}" == generic || "${{ inputs.atf_profile }}" == b200 ]]
+          [[ "${{ inputs.atf_profile }}" == generic || \
+            "${{ inputs.atf_profile }}" == b200 || \
+            "${{ inputs.atf_profile }}" == h200 ]]
           if [[ -z "${ATF_CLOUD_PROFILE}" ]]; then
-            echo "::error::GitHub variable SLURM_ATF_PROFILE is empty"
+            echo "::error::The selected Slurm ATF cloud profile variable is empty"
             exit 1
           fi
           [[ "${NEBIUS_CLI_PROFILE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]
@@ -195,6 +218,14 @@ jobs:
           [[ "${boot_disk_gib}" =~ ^[1-9][0-9]*$ ]]
           [[ "${ssh_user}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
           vm_shape="${platform}/${preset}/${boot_disk_gib}GiB-${boot_disk_type}"
+
+          if [[ "${{ inputs.atf_profile }}" == h200 ]]; then
+            test "${platform}" = gpu-h200-sxm
+            test "${preset}" = 8gpu-128vcpu-1600gb
+          fi
+          if [[ -n "${{ inputs.expected_vm_shape }}" ]]; then
+            test "${vm_shape}" = "${{ inputs.expected_vm_shape }}"
+          fi
 
           emit NEBIUS_PROJECT_ID "${project_id}"
           emit NEBIUS_SUBNET_ID "${subnet_id}"
@@ -246,6 +277,25 @@ jobs:
             "${HOME}/.nebius/config.yaml"
           chmod 600 "${HOME}/.nebius/config.yaml"
           nebius version --full
+
+      - name: Verify image and VM compatibility before allocation
+        run: |
+          set -euo pipefail
+          image_json="$(nebius compute image get \
+            --profile "${NEBIUS_CLI_PROFILE}" \
+            --format json \
+            --id "${NEBIUS_VM_IMAGE_ID}")"
+          test "$(jq -er '.metadata.id' <<<"${image_json}")" = \
+            "${NEBIUS_VM_IMAGE_ID}"
+          test "$(jq -er '.status.state' <<<"${image_json}")" = READY
+          test "$(jq -er '.spec.cpu_architecture' <<<"${image_json}")" = AMD64
+          jq -e --arg platform "${NEBIUS_VM_PLATFORM}" \
+            '.spec.recommended_platforms | index($platform) != null' \
+            <<<"${image_json}" >/dev/null
+          min_disk_bytes="$(jq -er '.status.min_disk_size_bytes | tonumber' \
+            <<<"${image_json}")"
+          configured_disk_bytes="$((NEBIUS_VM_BOOT_DISK_GIB * 1024 * 1024 * 1024))"
+          ((configured_disk_bytes >= min_disk_bytes))
 
       - name: Prepare SSH identities
         env:

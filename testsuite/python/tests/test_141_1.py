@@ -22,6 +22,10 @@ resume_timeout = 10
 @pytest.fixture(scope="module", autouse=True)
 def setup():
     atf.require_auto_config("Runs slurmd on same machine as slurmctld")
+    # This cloud-node test does not exercise accounting. Disable it explicitly
+    # so an accounting-enabled base profile does not leave a manually-started
+    # slurmdbd outside the usual require_slurm_running() lifecycle.
+    atf.require_config_parameter("AccountingStorageType", "accounting_storage/none")
     atf.require_config_parameter("NodeFeaturesPlugins", "node_features/helpers")
     atf.require_config_parameter("SelectType", "select/cons_tres")
     atf.require_config_parameter("SelectTypeParameters", "CR_CPU")
@@ -68,6 +72,11 @@ def setup():
 
     # Don't run the usual atf.require_slurm_running() because tests will start
     # slurmds manually
+    if (
+        atf.get_config_parameter("AccountingStorageType", live=False)
+        == "accounting_storage/slurmdbd"
+    ):
+        atf.start_slurmdbd()
     atf.start_slurmctld(clean=True)
 
     yield

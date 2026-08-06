@@ -633,7 +633,7 @@ def test_het_job_pending_when_gpu_partition_busy(setup_account_and_qos, cancel_j
     """
     block_jid = atf.submit_job_sbatch(
         f"-J {test_name}_gpu_all -p {p_gpu} --qos={qos_gpu_nodeny} "
-        '-N2 -t10 --wrap "sleep 600"',
+        '-N2 --exclusive -t10 --wrap "sleep 600"',
         fatal=False,
     )
     assert block_jid != 0, "Blocker job should submit"

@@ -148,15 +148,27 @@ def _restart_dynamic_slurmd(name, port, conf_extra="", slurmd_args=""):
     _wait_for_slurmd_reregister.
 
     Returns the previous slurmd_start_time for callers that pass it to
-    _wait_for_slurmd_reregister, or None when slurmctld is unreachable."""
+    _wait_for_slurmd_reregister, or None when slurmctld is unreachable. For
+    simulated reboots, also wait past last_response: reboot detection compares
+    the new boot_time against that later timestamp, not slurmd_start_time."""
     old_start = None
+    old_response = None
     if atf.is_slurmctld_running(quiet=True):
         old_start = atf.get_node_parameter(name, "slurmd_start_time")
+        if "-b" in slurmd_args.split():
+            old_response = atf.get_node_parameter(name, "last_response")
 
     _kill_dynamic_slurmd(name)
 
     if old_start is not None:
         old_second = old_start["number"] if isinstance(old_start, dict) else old_start
+        if old_response is not None:
+            response_second = (
+                old_response["number"]
+                if isinstance(old_response, dict)
+                else old_response
+            )
+            old_second = max(old_second, response_second)
         while int(time.time()) <= old_second:
             time.sleep(0.05)
 

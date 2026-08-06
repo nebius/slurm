@@ -14,11 +14,12 @@ import pytest
 import atf
 
 select_type = None
+node_cpus = 1
 
 
 @pytest.fixture(scope="module", autouse=True)
 def setup():
-    global select_type
+    global node_cpus, select_type
 
     atf.require_config_parameter(
         "PartitionName",
@@ -41,6 +42,13 @@ def setup():
     atf.require_slurm_running()
 
     select_type = atf.get_config_parameter("SelectType")
+    node = next(iter(atf.nodes))
+    node_cpus = int(atf.get_node_parameter(node, "cpus"))
+
+
+def submit_job(options):
+    """Submit a job that occupies the whole configured node when not shared."""
+    return atf.submit_job_sbatch(f"-c{node_cpus} {options}", fatal=True)
 
 
 def test_oversubscribe_force_partition():
@@ -53,15 +61,13 @@ def test_oversubscribe_force_partition():
     one of the 2 slots in p3.
     """
     # Submit first job to p1 (OverSubscribe=YES) with --oversubscribe
-    job_id1 = atf.submit_job_sbatch(
-        "--oversubscribe -p p1 --wrap='sleep infinity'", fatal=True
-    )
+    job_id1 = submit_job("--oversubscribe -p p1 --wrap='sleep infinity'")
     atf.wait_for_job_state(job_id1, "RUNNING", fatal=True)
     node1 = atf.get_job_parameter(job_id1, "NodeList", fatal=True)
 
     # Submit second job to p3 (OverSubscribe=FORCE:2) *without* --oversubscribe
     # This job should run because p3 forces oversubscription
-    job_id2 = atf.submit_job_sbatch("-p p3 --wrap='sleep infinity'", fatal=True)
+    job_id2 = submit_job("-p p3 --wrap='sleep infinity'")
     atf.wait_for_job_state(job_id2, "RUNNING", fatal=True)
     node2 = atf.get_job_parameter(job_id2, "NodeList", fatal=True)
 
@@ -71,7 +77,7 @@ def test_oversubscribe_force_partition():
     ), f"Jobs should run on the same node ({node1} vs {node2})"
 
     # Submit third job to p3 (OverSubscribe=FORCE:2) *without* --oversubscribe
-    job_id3 = atf.submit_job_sbatch("-p p3 --wrap='sleep infinity'", fatal=True)
+    job_id3 = submit_job("-p p3 --wrap='sleep infinity'")
 
     if select_type == "select/linear":
         assert atf.wait_for_job_state(
@@ -87,7 +93,7 @@ def test_oversubscribe_force_partition():
         ), f"Job 3 should run on the same node with cons_tres because FORCE:2 counts jobs independently per partition ({node1} vs {node3})"
 
         # Submit fourth job to p3 (OverSubscribe=FORCE:2) *without* --oversubscribe
-        job_id4 = atf.submit_job_sbatch("-p p3 --wrap='sleep infinity'", fatal=True)
+        job_id4 = submit_job("-p p3 --wrap='sleep infinity'")
         assert atf.wait_for_job_state(
             job_id4,
             "PENDING",
@@ -98,7 +104,7 @@ def test_oversubscribe_force_partition():
     # This job should be PENDING because p1 is OverSubscribe=YES and doesn't
     # oversubscribe by default. The Reason is not Resources because jobs are
     # in different partitions.
-    job_id5 = atf.submit_job_sbatch("-p p1 --wrap='sleep infinity'", fatal=True)
+    job_id5 = submit_job("-p p1 --wrap='sleep infinity'")
     assert atf.wait_for_job_state(
         job_id5,
         "PENDING",
@@ -118,8 +124,8 @@ def test_oversubscribe_force_independent_partition_counts():
     at 3.
     """
     # Fill p3 (FORCE:2) to its limit
-    p3_job1 = atf.submit_job_sbatch("-p p3 --wrap='sleep infinity'", fatal=True)
-    p3_job2 = atf.submit_job_sbatch("-p p3 --wrap='sleep infinity'", fatal=True)
+    p3_job1 = submit_job("-p p3 --wrap='sleep infinity'")
+    p3_job2 = submit_job("-p p3 --wrap='sleep infinity'")
     atf.wait_for_job_state(p3_job1, "RUNNING", fatal=True)
     atf.wait_for_job_state(p3_job2, "RUNNING", fatal=True)
     node = atf.get_job_parameter(p3_job1, "NodeList", fatal=True)
@@ -129,14 +135,14 @@ def test_oversubscribe_force_independent_partition_counts():
     ), f"p3 jobs should share the same node ({node} vs {p3_job2_node})"
 
     # A 3rd p3 job exceeds p3's FORCE:2 and pends under either plugin
-    p3_job3 = atf.submit_job_sbatch("-p p3 --wrap='sleep infinity'", fatal=True)
+    p3_job3 = submit_job("-p p3 --wrap='sleep infinity'")
     assert atf.wait_for_job_state(
         p3_job3, "PENDING", "Resources"
     ), "3rd p3 job should pend: p3's FORCE:2 is reached"
 
     # A p4 job starts on the same node under both plugins (cons_tres: p4's own
     # count is still 0; linear: 2 jobs on the node is below p4's cap of 3)
-    p4_job1 = atf.submit_job_sbatch("-p p4 --wrap='sleep infinity'", fatal=True)
+    p4_job1 = submit_job("-p p4 --wrap='sleep infinity'")
     atf.wait_for_job_state(p4_job1, "RUNNING", fatal=True)
     p4_job1_node = atf.get_job_parameter(p4_job1, "NodeList", fatal=True)
     assert (
@@ -148,14 +154,14 @@ def test_oversubscribe_force_independent_partition_counts():
         # An overflow job blocked by an overlapping partition pends with a
         # partition-priority reason rather than "Resources", so only the state
         # is checked.
-        p4_job2 = atf.submit_job_sbatch("-p p4 --wrap='sleep infinity'", fatal=True)
+        p4_job2 = submit_job("-p p4 --wrap='sleep infinity'")
         assert atf.wait_for_job_state(
             p4_job2, "PENDING"
         ), "select/linear caps the node at the submission partition's limit (p4=3)"
     else:
         # cons_tres counts p4 independently, so 2 more p4 jobs run (5 on node)
-        p4_job2 = atf.submit_job_sbatch("-p p4 --wrap='sleep infinity'", fatal=True)
-        p4_job3 = atf.submit_job_sbatch("-p p4 --wrap='sleep infinity'", fatal=True)
+        p4_job2 = submit_job("-p p4 --wrap='sleep infinity'")
+        p4_job3 = submit_job("-p p4 --wrap='sleep infinity'")
         atf.wait_for_job_state(p4_job2, "RUNNING", fatal=True)
         atf.wait_for_job_state(p4_job3, "RUNNING", fatal=True)
         p4_job2_node = atf.get_job_parameter(p4_job2, "NodeList", fatal=True)
@@ -166,7 +172,7 @@ def test_oversubscribe_force_independent_partition_counts():
 
         # A 4th p4 job exceeds p4's FORCE:3 and pends, independent of p3 (it
         # pends with a partition-priority reason, not "Resources")
-        p4_job4 = atf.submit_job_sbatch("-p p4 --wrap='sleep infinity'", fatal=True)
+        p4_job4 = submit_job("-p p4 --wrap='sleep infinity'")
         assert atf.wait_for_job_state(
             p4_job4, "PENDING"
         ), "4th p4 job should pend: p4's FORCE:3 is reached independently of p3"
@@ -179,12 +185,8 @@ def test_oversubscribe_yes_independent_partition_counts():
     --oversubscribe.
     """
     # Fill p2 (YES:2) to its limit
-    p2_job1 = atf.submit_job_sbatch(
-        "--oversubscribe -p p2 --wrap='sleep infinity'", fatal=True
-    )
-    p2_job2 = atf.submit_job_sbatch(
-        "--oversubscribe -p p2 --wrap='sleep infinity'", fatal=True
-    )
+    p2_job1 = submit_job("--oversubscribe -p p2 --wrap='sleep infinity'")
+    p2_job2 = submit_job("--oversubscribe -p p2 --wrap='sleep infinity'")
     atf.wait_for_job_state(p2_job1, "RUNNING", fatal=True)
     atf.wait_for_job_state(p2_job2, "RUNNING", fatal=True)
     node = atf.get_job_parameter(p2_job1, "NodeList", fatal=True)
@@ -194,18 +196,14 @@ def test_oversubscribe_yes_independent_partition_counts():
     ), f"p2 jobs should share the same node ({node} vs {p2_job2_node})"
 
     # A 3rd p2 job exceeds p2's YES:2 and pends under either plugin
-    p2_job3 = atf.submit_job_sbatch(
-        "--oversubscribe -p p2 --wrap='sleep infinity'", fatal=True
-    )
+    p2_job3 = submit_job("--oversubscribe -p p2 --wrap='sleep infinity'")
     assert atf.wait_for_job_state(
         p2_job3, "PENDING", "Resources"
     ), "3rd p2 job should pend: p2's YES:2 is reached"
 
     # A p5 job starts on the same node under both plugins (cons_tres: p5's own
     # count is still 0; linear: 2 jobs on the node is below p5's cap of 3)
-    p5_job1 = atf.submit_job_sbatch(
-        "--oversubscribe -p p5 --wrap='sleep infinity'", fatal=True
-    )
+    p5_job1 = submit_job("--oversubscribe -p p5 --wrap='sleep infinity'")
     atf.wait_for_job_state(p5_job1, "RUNNING", fatal=True)
     p5_job1_node = atf.get_job_parameter(p5_job1, "NodeList", fatal=True)
     assert (
@@ -217,20 +215,14 @@ def test_oversubscribe_yes_independent_partition_counts():
         # An overflow job blocked by an overlapping partition pends with a
         # partition-priority reason rather than "Resources", so only the state
         # is checked.
-        p5_job2 = atf.submit_job_sbatch(
-            "--oversubscribe -p p5 --wrap='sleep infinity'", fatal=True
-        )
+        p5_job2 = submit_job("--oversubscribe -p p5 --wrap='sleep infinity'")
         assert atf.wait_for_job_state(
             p5_job2, "PENDING"
         ), "select/linear caps the node at the submission partition's limit (p5=3)"
     else:
         # cons_tres counts p5 independently, so 2 more p5 jobs run (5 on node)
-        p5_job2 = atf.submit_job_sbatch(
-            "--oversubscribe -p p5 --wrap='sleep infinity'", fatal=True
-        )
-        p5_job3 = atf.submit_job_sbatch(
-            "--oversubscribe -p p5 --wrap='sleep infinity'", fatal=True
-        )
+        p5_job2 = submit_job("--oversubscribe -p p5 --wrap='sleep infinity'")
+        p5_job3 = submit_job("--oversubscribe -p p5 --wrap='sleep infinity'")
         atf.wait_for_job_state(p5_job2, "RUNNING", fatal=True)
         atf.wait_for_job_state(p5_job3, "RUNNING", fatal=True)
         p5_job2_node = atf.get_job_parameter(p5_job2, "NodeList", fatal=True)
@@ -241,9 +233,7 @@ def test_oversubscribe_yes_independent_partition_counts():
 
         # A 4th p5 job exceeds p5's YES:3 and pends, independent of p2 (it
         # pends with a partition-priority reason, not "Resources")
-        p5_job4 = atf.submit_job_sbatch(
-            "--oversubscribe -p p5 --wrap='sleep infinity'", fatal=True
-        )
+        p5_job4 = submit_job("--oversubscribe -p p5 --wrap='sleep infinity'")
         assert atf.wait_for_job_state(
             p5_job4, "PENDING"
         ), "4th p5 job should pend: p5's YES:3 is reached independently of p2"
@@ -255,17 +245,13 @@ def test_oversubscribe_yes_partition():
     Unlike FORCE, YES requires each job to opt into sharing with --oversubscribe.
     """
     # Submit first job to p1 (OverSubscribe=YES) with --oversubscribe
-    job_id1 = atf.submit_job_sbatch(
-        "--oversubscribe -p p1 --wrap='sleep infinity'", fatal=True
-    )
+    job_id1 = submit_job("--oversubscribe -p p1 --wrap='sleep infinity'")
     atf.wait_for_job_state(job_id1, "RUNNING", fatal=True)
     node1 = atf.get_job_parameter(job_id1, "NodeList", fatal=True)
 
     # Submit second job to p2 (OverSubscribe=YES:2) *with* --oversubscribe
     # This job should run and share the node since both jobs opted into sharing
-    job_id2 = atf.submit_job_sbatch(
-        "--oversubscribe -p p2 --wrap='sleep infinity'", fatal=True
-    )
+    job_id2 = submit_job("--oversubscribe -p p2 --wrap='sleep infinity'")
     atf.wait_for_job_state(job_id2, "RUNNING", fatal=True)
     node2 = atf.get_job_parameter(job_id2, "NodeList", fatal=True)
 
@@ -275,9 +261,7 @@ def test_oversubscribe_yes_partition():
     ), f"Jobs should run on the same node ({node1} vs {node2})"
 
     # Submit third job to p2 (OverSubscribe=YES:2) *with* --oversubscribe
-    job_id3 = atf.submit_job_sbatch(
-        "--oversubscribe -p p2 --wrap='sleep infinity'", fatal=True
-    )
+    job_id3 = submit_job("--oversubscribe -p p2 --wrap='sleep infinity'")
     if select_type == "select/linear":
         assert atf.wait_for_job_state(
             job_id3,
@@ -293,9 +277,7 @@ def test_oversubscribe_yes_partition():
         ), f"Job 3 should run on the same node with cons_tres because YES:2 counts jobs independently per partition ({node1} vs {node3})"
 
         # Submit fourth job to p2 (OverSubscribe=YES:2) *with* --oversubscribe
-        job_id4 = atf.submit_job_sbatch(
-            "--oversubscribe -p p2 --wrap='sleep infinity'", fatal=True
-        )
+        job_id4 = submit_job("--oversubscribe -p p2 --wrap='sleep infinity'")
         assert atf.wait_for_job_state(
             job_id4,
             "PENDING",
@@ -306,7 +288,7 @@ def test_oversubscribe_yes_partition():
     # This job should be PENDING because p1 is OverSubscribe=YES and doesn't
     # oversubscribe by default. The Reason is not Resources because jobs are
     # in different partitions.
-    job_id5 = atf.submit_job_sbatch("-p p1 --wrap='sleep infinity'", fatal=True)
+    job_id5 = submit_job("-p p1 --wrap='sleep infinity'")
     assert atf.wait_for_job_state(
         job_id5,
         "PENDING",

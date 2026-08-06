@@ -1162,6 +1162,35 @@ def gcore(component, pid=None, sbin=True):
         )
 
 
+def ensure_node_directories(node_expression, quiet=False):
+    """Create the per-node spool and TmpFS directories used by slurmd.
+
+    Tests that replace NodeName stanzas directly do not go through create_node(),
+    so their synthetic nodes otherwise start without SlurmdSpoolDir/TmpFS. PMIx
+    then fails in slurmstepd before the task is launched.
+    """
+
+    spool_pattern = properties.get("slurm-spool-dir")
+    tmpfs_pattern = properties.get("slurm-tmpfs")
+    if not spool_pattern or not tmpfs_pattern:
+        return
+
+    nodes = properties.setdefault("nodes", [])
+    for node_name in node_range_to_list(node_expression):
+        if node_name.casefold() == "default":
+            continue
+        spool_dir = spool_pattern.replace("%n", node_name)
+        tmpfs_dir = tmpfs_pattern.replace("%n", node_name)
+        if node_name not in nodes:
+            nodes.append(node_name)
+        run_command(
+            f"mkdir -p {spool_dir} {tmpfs_dir}",
+            user="root",
+            fatal=True,
+            quiet=quiet,
+        )
+
+
 def start_slurmd(slurmd_name, quiet=False):
     """Starts slurmd for node.
 
@@ -1173,6 +1202,8 @@ def start_slurmd(slurmd_name, quiet=False):
     Returns:
         None
     """
+
+    ensure_node_directories(slurmd_name, quiet=quiet)
 
     # Check whether slurmd is running
     slurmd_pgrep = run_command(f"pgrep -f 'slurmd -N {slurmd_name}'", quiet=quiet)
@@ -2175,10 +2206,14 @@ def require_expect():
     if "no-color" in properties and properties["no-color"]:
         colorize = 0
 
+    testsuite_user = os.environ.get("SLURM_TEST_USER", get_user_name())
     globals_local_content = f"""\
-set testsuite_user {get_user_name()}
+set testsuite_user {testsuite_user}
 set testsuite_colorize {colorize}
 set testsuite_cleanup_on_failure false
+if {{[file executable /usr/local/cuda/bin/nvcc]}} {{
+    set nvcc /usr/local/cuda/bin/nvcc
+}}
 
 # These are not necessary because we should use SLURM_TESTSUITE_CONF
 # set slurm_dir  {properties['slurm-prefix']}
@@ -2854,6 +2889,14 @@ def set_config_parameter(
         fatal=True,
         quiet=True,
     )
+
+    if (
+        source == "slurm"
+        and parameter_name.casefold() == "nodename"
+        and isinstance(parameter_value, dict)
+    ):
+        for node_expression in parameter_value:
+            ensure_node_directories(node_expression, quiet=True)
 
     slurmctld_running = is_slurmctld_running(quiet=True)
 

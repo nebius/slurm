@@ -79,5 +79,5 @@ wait""",
         return steps_written
 
     assert atf.repeat_until(
-        count_steps_written, lambda n: n == steps_submitted
+        count_steps_written, lambda n: n == steps_submitted, timeout=90
     ), f"All steps ({steps_submitted}) should be written to the output file ({steps_written} != {steps_submitted})"

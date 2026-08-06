@@ -24,12 +24,19 @@ def setup():
         {"gpu": {"File": "/dev/tty[0-1]", "Flags": "env_uuid"}},
         source="gres",
     )
+    atf.require_nodes(1, [("Gres", "gpu:2"), ("CPUs", 2)])
+    gpu_node = next(
+        node
+        for node in atf.get_nodes(live=False, quiet=True).values()
+        if node.get("Gres") == "gpu:2"
+    )
+    cpu_count = int(gpu_node["CPUs"])
+    cpu_range = f"0-{cpu_count - 1}"
     atf.require_config_file(
         "fake_gpus.conf",
-        f"(null)|2|0-1|(null)|/dev/tty0|{gpu_uuid0}|nvidia_gpu_env,amd_gpu_env\n"
-        f"(null)|2|0-1|(null)|/dev/tty1|{gpu_uuid1}|nvidia_gpu_env,amd_gpu_env\n",
+        f"(null)|{cpu_count}|{cpu_range}|(null)|/dev/tty0|{gpu_uuid0}|nvidia_gpu_env,amd_gpu_env\n"
+        f"(null)|{cpu_count}|{cpu_range}|(null)|/dev/tty1|{gpu_uuid1}|nvidia_gpu_env,amd_gpu_env\n",
     )
-    atf.require_nodes(1, [("Gres", "gpu:2"), ("CPUs", 2)])
     atf.require_version((26, 5), "sbin/slurmd")
     atf.require_slurm_running()
 

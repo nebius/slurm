@@ -284,6 +284,7 @@ Configure the following values in the GitHub `e2e` environment:
 | --- | --- | --- |
 | Variable | `NEBIUS_CLI_CONFIG` | Nebius CLI `config.yaml` without the private key |
 | Variable | `SLURM_ATF_PROFILE` | Project, subnet, VM shape, and SSH user |
+| Variable | `SLURM_ATF_H200_PROFILE` | Optional dedicated 8xH200 project, subnet, shape, and SSH user |
 | Secret | `NEBIUS_PRIVATE_KEY` | Private key for the selected Nebius CLI profile |
 | Secret | `SLURM_ATF_SSH_PRIVATE_KEY` | Unencrypted OpenSSH key used for the disposable VM |
 | Secret | `SLURM_ATF_DEBUG_SSH_PUBLIC_KEYS` | Optional newline-separated public keys for human debugging |
@@ -352,8 +353,40 @@ ssh_user: slurm-atf-ci
 
 `boot_disk_gib` must be a positive integer. `ssh_user` must be a lowercase
 Linux username containing only letters, digits, underscores, or hyphens. The
-compute image does not belong in this variable: the current ATF workflows pin
-`computeimage-e00sphs75y9ej9nw9j` directly.
+compute image does not belong in this variable: the baseline workflow receives
+an immutable image ID explicitly, and candidate runs inherit it from the
+published baseline metadata.
+
+For a full 8xH200 baseline, store this dedicated shape in
+`SLURM_ATF_H200_PROFILE`:
+
+```yaml
+nebius_project_id: project-e00y7jt0r898cb4xmw
+slurm_atf:
+  subnet_id: vpcsubnet-e00sn03j64ps398smm
+  platform: gpu-h200-sxm
+  preset: 8gpu-128vcpu-1600gb
+  boot_disk_gib: 512
+  boot_disk_type: network_ssd
+  ssh_user: slurm-atf-ci
+```
+
+The H200 workflow profile requires an ATF image whose metadata declares eight
+H200 GPUs and whose Nebius image metadata recommends `gpu-h200-sxm`. The
+workflow checks the image state, architecture, minimum disk size, platform,
+CUDA compiler, NVML headers, and all eight GPUs before starting the long test
+suite. The CPU-only image `computeimage-e00sphs75y9ej9nw9j` is not compatible
+with this profile.
+
+Build and version that image using the repository-owned
+[`nebius/ci/images/slurm-atf-h200`](ci/images/slurm-atf-h200/README.md)
+Packer definition. Its project and subnet are runtime variables and are not
+stored in Git.
+
+Keeping H200 in a separate variable leaves `SLURM_ATF_PROFILE` available to
+the CPU smoke workflow. Full runs automatically select
+`SLURM_ATF_H200_PROFILE` when `atf_profile=h200`; no variable has to be swapped
+between runs.
 
 The effective security group must allow TCP/22 from GitHub-hosted runners.
 The Nebius identity must be allowed to create, inspect, and delete Compute
@@ -448,6 +481,13 @@ testcase passes. Changing a known failure into a skip or another failure mode
 still fails the comparison; a patch cannot hide it by skipping or removing
 the test.
 
+Only stable assertion-level failures caused by the vanilla Slurm source are
+acceptable baseline outcomes. Harness setup errors, order-dependent failures,
+profile-size assumptions, and state leaks must be fixed in the common tests on
+`master` before publishing a baseline. Recording those as expected failures
+would leave their assertions unexecuted and make later A/B comparisons noisy
+or misleading.
+
 #### Creating the baseline in `NB-0001`
 
 Push `patch/NB-0001-sync-docs-and-tests`, then run the baseline workflow on
@@ -458,6 +498,8 @@ gh workflow run slurm-atf-baseline.yml \
   --ref patch/NB-0001-sync-docs-and-tests \
   -f release_line=26.05 \
   -f upstream_branch=slurm-26.05 \
+  -f image_id=<prepared-h200-computeimage-id> \
+  -f atf_profile=h200 \
   -f nebius_cli_profile=default \
   -f keep_vm_on_failure=false
 ```
@@ -507,6 +549,10 @@ gh workflow run slurm-atf-candidate.yml \
 The optional `baseline_tag` input overrides the pointer for diagnosis. Do not
 use an override as the normal merge result: the committed pointer is the
 reviewed comparison contract for the release.
+
+Candidate runs also inherit the image ID, ATF profile, and exact VM shape from
+that immutable baseline. A changed GitHub environment profile therefore fails
+before allocating a VM instead of producing an invalid multi-hour comparison.
 
 After a comparison, two 30-day Actions artifacts are available: the complete
 candidate evidence and a smaller A/B report in Markdown and JSON. The vanilla

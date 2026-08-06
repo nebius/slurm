@@ -105,6 +105,20 @@ Bring the applicable documentation, test suite, and CI workflow files from
 and open a pull request into `nebius/26.05`. This pull request establishes the
 common test baseline for all subsequent Nebius patches on the release.
 
+Synchronize the complete `testsuite/` tree, not only `testsuite/python/`.
+The Python wrappers invoke files under `testsuite/expect/` and use the common
+runner and libraries under `testsuite/run-tests` and `testsuite/src/`. The
+full-ATF workflow checks for these paths before creating a VM so an incomplete
+sync fails quickly without consuming cloud resources.
+
+Use a tree-level restore so additions, updates, and removals from `master` are
+all applied together. Including `--staged` also carries files that an older
+release's `.gitignore` may still ignore:
+
+```sh
+git restore --source=origin/master --staged --worktree -- testsuite
+```
+
 Before merging `NB-0001`, publish the vanilla full-ATF baseline and add its
 immutable release tag to `nebius/ci/atf/baselines/26.05.txt` in the same pull
 request. The detailed procedure is in
@@ -255,7 +269,7 @@ workflows are a special case: GitHub runs them only from the repository's
 default branch, so a scheduled orchestration workflow belongs on `master` and
 can explicitly check out the release branch it needs to test.
 
-### Initial smoke test
+### ATF environment and initial smoke test
 
 The initial [`Slurm smoke test`](../.github/workflows/slurm-smoke-test.yml)
 workflow is manual while the CI setup is being validated. It creates a
@@ -338,8 +352,8 @@ ssh_user: slurm-atf-ci
 
 `boot_disk_gib` must be a positive integer. `ssh_user` must be a lowercase
 Linux username containing only letters, digits, underscores, or hyphens. The
-compute image does not belong in this variable: the current smoke workflow
-pins `computeimage-e00sphs75y9ej9nw9j` directly.
+compute image does not belong in this variable: the current ATF workflows pin
+`computeimage-e00sphs75y9ej9nw9j` directly.
 
 The effective security group must allow TCP/22 from GitHub-hosted runners.
 The Nebius identity must be allowed to create, inspect, and delete Compute

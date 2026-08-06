@@ -72,7 +72,26 @@ jobs:
       ATF_INFRA_COMMIT: d6c8f15e431d41fc03eb87d276c02c9e485e6ac9
 
     steps:
-      - name: Checkout candidate source
+      - name: Initialize diagnostic evidence
+        run: |
+          set -euo pipefail
+          mkdir -p atf-result
+          jq -n \
+            --arg event_name "${GITHUB_EVENT_NAME}" \
+            --arg ref "${GITHUB_REF}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            '{
+              schema: 1,
+              event_name: $event_name,
+              ref: $ref,
+              repository: $repository,
+              run_id: $run_id,
+              run_attempt: $run_attempt
+            }' >atf-result/workflow-context.json
+
+      - name: Checkout source under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: source
@@ -106,6 +125,10 @@ jobs:
           test "${infra_commit}" = "${ATF_INFRA_COMMIT}"
           [[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${tests_commit}" =~ ^[0-9a-f]{40}$ ]]
+          test -d tests/testsuite/expect
+          test -d tests/testsuite/src
+          test -x tests/testsuite/run-tests
+          test -x tests/testsuite/python/run-tests-python
           {
             echo "source_commit=${source_commit}"
             echo "tests_commit=${tests_commit}"
@@ -289,7 +312,7 @@ jobs:
           done
 
       - id: remote_test
-        name: Build candidate and run the full Python ATF suite
+        name: Build source and run the full Python ATF suite
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -354,6 +377,9 @@ jobs:
           scp \
             -i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
             -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=6 \
             -o StrictHostKeyChecking=yes \
             -o "UserKnownHostsFile=${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" \
             -r "${SLURM_ATF_SSH_USER}@${NEBIUS_VM_PUBLIC_IP}:${remote_root}/result/." \
@@ -361,6 +387,9 @@ jobs:
           scp \
             -i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
             -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=6 \
             -o StrictHostKeyChecking=yes \
             -o "UserKnownHostsFile=${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" \
             "${SLURM_ATF_SSH_USER}@${NEBIUS_VM_PUBLIC_IP}:${remote_root}/orchestration.log" \
@@ -394,9 +423,21 @@ jobs:
         run: |
           set -euo pipefail
           test -s atf-result/junit.xml
+          test -s atf-result/image-metadata.json
           test -s atf-result/run-manifest.json
+          test -s atf-result/pytest-exit-status
           pytest_status="$(<atf-result/pytest-exit-status)"
-          [[ "${pytest_status}" =~ ^[0-9]+$ ]]
+          [[ "${pytest_status}" == 0 || "${pytest_status}" == 1 ]]
+          test "$(jq -er '.schema' atf-result/run-manifest.json)" = 1
+          test "$(jq -er '.release.line' atf-result/run-manifest.json)" = \
+            "${{ inputs.release_line }}"
+          test "$(jq -er '.release.commit' atf-result/run-manifest.json)" = \
+            "${{ steps.checkout_metadata.outputs.source_commit }}"
+          test "$(jq -er '.tests.master_commit' atf-result/run-manifest.json)" = \
+            "${{ steps.checkout_metadata.outputs.tests_commit }}"
+          test "$(jq -er '.atf.profile' atf-result/run-manifest.json)" = \
+            "${{ inputs.atf_profile }}"
+          jq -e '.schema == 1' atf-result/image-metadata.json >/dev/null
           junit_sha256="$(sha256sum atf-result/junit.xml | awk '{print $1}')"
           artifact_name="slurm-atf-${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
@@ -429,6 +470,14 @@ jobs:
             }' >atf-result/run-metadata.json
 
           echo "artifact_name=${artifact_name}" >>"${GITHUB_OUTPUT}"
+          {
+            echo
+            echo "### ATF evidence"
+            echo
+            echo "- Raw pytest exit status: \`${pytest_status}\`"
+            echo "- Artifact: \`${artifact_name}\`"
+            echo "- JUnit SHA256: \`${junit_sha256}\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
 
       - if: always()
         name: Upload complete ATF evidence
@@ -442,5 +491,5 @@ jobs:
       - if: always() && (steps.remote_test.outcome != 'success' || steps.metadata.outcome != 'success')
         name: Fail after evidence collection and cleanup
         run: |
-          echo "Full Slurm ATF execution did not produce valid evidence" >&2
+          echo "Full Slurm ATF execution did not produce valid evidence; inspect the uploaded artifact." >&2
           exit 1

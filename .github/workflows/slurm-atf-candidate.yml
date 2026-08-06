@@ -208,6 +208,12 @@ jobs:
           test "$(jq -er '.kind' "${candidate}")" = candidate
           test "$(jq -er '.release_line' "${baseline}")" = "${RELEASE_LINE}"
           test "$(jq -er '.release_line' "${candidate}")" = "${RELEASE_LINE}"
+          test "$(jq -er '.source.commit' "${candidate}")" = \
+            "${{ needs.run.outputs.source_commit }}"
+          for metadata in "${baseline}" "${candidate}"; do
+            pytest_status="$(jq -er '.result.pytest_exit_status' "${metadata}")"
+            [[ "${pytest_status}" == 0 || "${pytest_status}" == 1 ]]
+          done
           for query in \
             '.tests.commit' \
             '.infrastructure.repository' \

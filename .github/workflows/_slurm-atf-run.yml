@@ -39,35 +39,38 @@ on:
     outputs:
       artifact_name:
         description: Complete Actions artifact for this run
-        value: ${{ jobs.run.outputs.artifact_name }}
+        value: ${{ jobs.pytest.outputs.artifact_name }}
       source_commit:
         description: Exact Slurm source commit that was built
-        value: ${{ jobs.run.outputs.source_commit }}
+        value: ${{ jobs.expect.outputs.source_commit }}
       tests_commit:
         description: Exact commit supplying the common tests
-        value: ${{ jobs.run.outputs.tests_commit }}
+        value: ${{ jobs.expect.outputs.tests_commit }}
       infra_commit:
         description: Exact slurm-deb-packages ATF infrastructure commit
-        value: ${{ jobs.run.outputs.infra_commit }}
+        value: ${{ jobs.expect.outputs.infra_commit }}
       vm_shape:
         description: Effective Nebius VM shape
-        value: ${{ jobs.run.outputs.vm_shape }}
+        value: ${{ jobs.expect.outputs.vm_shape }}
 
 permissions:
   contents: read
 
 jobs:
-  run:
-    name: Full Python ATF / ${{ inputs.run_kind }}
+  expect:
+    name: Build Slurm and run Expect wrappers / ${{ inputs.run_kind }}
     runs-on: ubuntu-24.04
     environment: e2e
-    timeout-minutes: 1440
+    timeout-minutes: 350
     outputs:
-      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
       source_commit: ${{ steps.checkout_metadata.outputs.source_commit }}
       tests_commit: ${{ steps.checkout_metadata.outputs.tests_commit }}
       infra_commit: ${{ steps.checkout_metadata.outputs.infra_commit }}
       vm_shape: ${{ steps.profile.outputs.vm_shape }}
+      ssh_user: ${{ steps.profile.outputs.ssh_user }}
+      vm_id: ${{ steps.create_vm.outputs.vm_id }}
+      public_ip: ${{ steps.wait_vm.outputs.public_ip }}
+      known_hosts_b64: ${{ steps.handoff.outputs.known_hosts_b64 }}
     env:
       ATF_CLOUD_PROFILE: ${{ inputs.atf_profile == 'h200' && vars.SLURM_ATF_H200_PROFILE || vars.SLURM_ATF_PROFILE }}
       NEBIUS_CLI_VERSION: 0.12.253
@@ -80,7 +83,7 @@ jobs:
       - name: Initialize diagnostic evidence
         run: |
           set -euo pipefail
-          mkdir -p atf-result
+          mkdir -p expect-result
           jq -n \
             --arg event_name "${GITHUB_EVENT_NAME}" \
             --arg ref "${GITHUB_REF}" \
@@ -89,12 +92,13 @@ jobs:
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
             '{
               schema: 1,
+              phase: "expect",
               event_name: $event_name,
               ref: $ref,
               repository: $repository,
               run_id: $run_id,
               run_attempt: $run_attempt
-            }' >atf-result/workflow-context.json
+            }' >expect-result/workflow-context.json
 
       - name: Checkout source under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,10 +134,11 @@ jobs:
           test "${infra_commit}" = "${ATF_INFRA_COMMIT}"
           [[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${tests_commit}" =~ ^[0-9a-f]{40}$ ]]
-          test -d tests/testsuite/expect
-          test -d tests/testsuite/src
-          test -x tests/testsuite/run-tests
+          test -d tests/testsuite/python/expect
+          test -d tests/testsuite/python/tests
           test -x tests/testsuite/python/run-tests-python
+          test -x tests/nebius/ci/atf/run-remote-phase.sh
+          test -f tests/nebius/ci/atf/merge_junit.py
           {
             echo "source_commit=${source_commit}"
             echo "tests_commit=${tests_commit}"
@@ -237,10 +242,13 @@ jobs:
           [[ "${security_group_id}" != *$'\n'* ]]
           printf 'NEBIUS_SECURITY_GROUP_ID=%s\n' "${security_group_id}" \
             >>"${GITHUB_ENV}"
-          echo "vm_shape=${vm_shape}" >>"${GITHUB_OUTPUT}"
+          {
+            echo "vm_shape=${vm_shape}"
+            echo "ssh_user=${ssh_user}"
+          } >>"${GITHUB_OUTPUT}"
 
           {
-            echo "### Full Slurm ATF run"
+            echo "### Split Slurm ATF run"
             echo
             echo "- Kind: \`${{ inputs.run_kind }}\`"
             echo "- Release line: \`${{ inputs.release_line }}\`"
@@ -249,6 +257,8 @@ jobs:
             echo "- Infrastructure: \`${ATF_INFRA_COMMIT}\`"
             echo "- Image: \`${NEBIUS_VM_IMAGE_ID}\`"
             echo "- Shape: \`${vm_shape}\`"
+            echo "- Phase 1: build + Expect wrappers"
+            echo "- Phase 2: Python tests on the same VM"
           } >>"${GITHUB_STEP_SUMMARY}"
 
       - name: Install Nebius CLI
@@ -344,6 +354,17 @@ jobs:
             echo "- SSH: \`ssh ${SLURM_ATF_SSH_USER}@${public_ip}\`"
           } >>"${GITHUB_STEP_SUMMARY}"
 
+      - id: handoff
+        name: Pin the VM SSH host key for the next job
+        run: |
+          set -euo pipefail
+          test -s "${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}"
+          ssh-keygen -F "${NEBIUS_VM_PUBLIC_IP}" \
+            -f "${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" >/dev/null
+          known_hosts_b64="$(base64 -w0 "${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}")"
+          test -n "${known_hosts_b64}"
+          echo "known_hosts_b64=${known_hosts_b64}" >>"${GITHUB_OUTPUT}"
+
       - name: Copy source, tests, and infrastructure to the VM
         run: |
           set -euo pipefail
@@ -361,68 +382,206 @@ jobs:
                 "mkdir -p '${remote_root}/${directory}' && tar -xzf - -C '${remote_root}/${directory}'"
           done
 
-      - id: remote_test
-        name: Build source and run the full Python ATF suite
+      - id: remote_expect
+        name: Build source and run Expect wrappers
         continue-on-error: true
         run: |
           set -euo pipefail
           remote_root="/home/${SLURM_ATF_SSH_USER}/slurm-atf"
           run_id="${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          tests/nebius/ci/atf/run-remote-phase.sh \
+            expect \
+            "${NEBIUS_VM_PUBLIC_IP}" \
+            "${remote_root}" \
+            "${run_id}" \
+            "${{ inputs.release_line }}" \
+            "${{ steps.checkout_metadata.outputs.source_commit }}" \
+            "${{ steps.checkout_metadata.outputs.tests_commit }}" \
+            "${{ inputs.atf_profile }}"
+
+      - if: always() && steps.wait_vm.outcome == 'success'
+        name: Collect Expect phase evidence
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          remote_root="/home/${SLURM_ATF_SSH_USER}/slurm-atf"
+          scp \
+            -i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=6 \
+            -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" \
+            -r "${SLURM_ATF_SSH_USER}@${NEBIUS_VM_PUBLIC_IP}:${remote_root}/result/." \
+            expect-result/ || true
+          scp \
+            -i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" \
+            "${SLURM_ATF_SSH_USER}@${NEBIUS_VM_PUBLIC_IP}:${remote_root}/orchestration-expect.log" \
+            expect-result/orchestration-expect.log || true
+
+      - if: always()
+        name: Upload Expect phase evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: slurm-atf-expect-${{ inputs.run_kind }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: expect-result/
+          if-no-files-found: error
+          retention-days: 30
+
+      - if: always() && steps.remote_expect.outcome != 'success'
+        name: Fail after collecting incomplete Expect evidence
+        run: |
+          echo "Expect phase did not complete normally; inspect the phase artifact." >&2
+          exit 1
+
+  pytest:
+    name: Run Python tests and finalize evidence / ${{ inputs.run_kind }}
+    needs: expect
+    runs-on: ubuntu-24.04
+    environment: e2e
+    timeout-minutes: 350
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+    env:
+      NEBIUS_CLI_VERSION: 0.12.253
+      NEBIUS_CLI_PROFILE: ${{ inputs.nebius_cli_profile }}
+      NEBIUS_VM_IMAGE_ID: ${{ inputs.image_id }}
+      NEBIUS_VM_NAME: slurm-atf-${{ github.run_id }}-${{ github.run_attempt }}
+      NEBIUS_VM_ID: ${{ needs.expect.outputs.vm_id }}
+      NEBIUS_VM_PUBLIC_IP: ${{ needs.expect.outputs.public_ip }}
+      SLURM_ATF_SSH_USER: ${{ needs.expect.outputs.ssh_user }}
+      ATF_INFRA_COMMIT: d6c8f15e431d41fc03eb87d276c02c9e485e6ac9
+
+    steps:
+      - name: Initialize final evidence
+        run: |
+          set -euo pipefail
+          mkdir -p atf-result
+          jq -n \
+            --arg event_name "${GITHUB_EVENT_NAME}" \
+            --arg ref "${GITHUB_REF}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            '{
+              schema: 1,
+              phase: "pytest",
+              event_name: $event_name,
+              ref: $ref,
+              repository: $repository,
+              run_id: $run_id,
+              run_attempt: $run_attempt
+            }' >atf-result/workflow-context.json
+
+      - name: Checkout the pinned test and CI tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tests_ref }}
+          path: tests
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install yq
+        uses: frenck/action-setup-yq@c4b5be8b4a215c536a41d436757d9feb92836d4f # v1.0.2
+        with:
+          version: v4.44.6
+
+      - name: Install Nebius CLI
+        env:
+          NEBIUS_INSTALL_FOLDER: ${{ github.workspace }}/bin
+        run: |
+          set -euo pipefail
+          mkdir -p "${NEBIUS_INSTALL_FOLDER}"
+          curl -sSL https://storage.eu-north1.nebius.cloud/cli/install.sh | bash
+          echo "${NEBIUS_INSTALL_FOLDER}" >>"${GITHUB_PATH}"
+
+      - name: Configure Nebius CLI
+        env:
+          NEBIUS_CLI_CONFIG: ${{ vars.NEBIUS_CLI_CONFIG }}
+          NEBIUS_PRIVATE_KEY: ${{ secrets.NEBIUS_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${NEBIUS_CLI_CONFIG}"
+          test -n "${NEBIUS_PRIVATE_KEY}"
+          mkdir -p "${HOME}/.nebius"
+          printf '%s\n' "${NEBIUS_CLI_CONFIG}" >"${HOME}/.nebius/config.yaml"
+          yq -e '.profiles[strenv(NEBIUS_CLI_PROFILE)] != null' \
+            "${HOME}/.nebius/config.yaml" >/dev/null
+          yq -i \
+            '.profiles[strenv(NEBIUS_CLI_PROFILE)]["private-key"] = strenv(NEBIUS_PRIVATE_KEY)' \
+            "${HOME}/.nebius/config.yaml"
+          chmod 600 "${HOME}/.nebius/config.yaml"
+
+      - name: Restore the pinned SSH identity and host key
+        env:
+          KNOWN_HOSTS_B64: ${{ needs.expect.outputs.known_hosts_b64 }}
+          SSH_PRIVATE_KEY: ${{ secrets.SLURM_ATF_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${KNOWN_HOSTS_B64}"
+          private_key_file="${RUNNER_TEMP}/slurm-atf-ssh-key"
+          known_hosts_file="${RUNNER_TEMP}/slurm-atf-known-hosts"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" | tr -d '\r' >"${private_key_file}"
+          chmod 600 "${private_key_file}"
+          printf '%s' "${KNOWN_HOSTS_B64}" | base64 -d >"${known_hosts_file}"
+          chmod 600 "${known_hosts_file}"
+          ssh-keygen -F "${NEBIUS_VM_PUBLIC_IP}" -f "${known_hosts_file}" >/dev/null
+          {
+            echo "SLURM_ATF_SSH_PRIVATE_KEY_FILE=${private_key_file}"
+            echo "SLURM_ATF_SSH_KNOWN_HOSTS_FILE=${known_hosts_file}"
+          } >>"${GITHUB_ENV}"
+
+      - name: Verify the handed-off VM identity
+        run: |
+          set -euo pipefail
+          instance_json="$(nebius compute instance get \
+            --profile "${NEBIUS_CLI_PROFILE}" \
+            --no-progress \
+            --format json \
+            --timeout=1m \
+            --id "${NEBIUS_VM_ID}")"
+          test "$(jq -er '.metadata.id' <<<"${instance_json}")" = "${NEBIUS_VM_ID}"
+          current_ip="$(jq -er \
+            '.status.network_interfaces[0].public_ip_address.address | split("/")[0]' \
+            <<<"${instance_json}")"
+          test "${current_ip}" = "${NEBIUS_VM_PUBLIC_IP}"
           ssh \
             -i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
             -o BatchMode=yes \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=60 \
+            -o ConnectTimeout=10 \
             -o StrictHostKeyChecking=yes \
             -o "UserKnownHostsFile=${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" \
             "${SLURM_ATF_SSH_USER}@${NEBIUS_VM_PUBLIC_IP}" \
-            bash -s -- \
-              "${remote_root}" \
-              "${run_id}" \
-              "${{ inputs.release_line }}" \
-              "${{ steps.checkout_metadata.outputs.source_commit }}" \
-              "${{ steps.checkout_metadata.outputs.tests_commit }}" \
-              "${{ inputs.atf_profile }}" <<'REMOTE'
-          set -euo pipefail
-          root="$1"
-          run_id="$2"
-          release_line="$3"
-          source_commit="$4"
-          tests_commit="$5"
-          atf_profile="$6"
-          source_dir="${root}/source"
-          tests_dir="${root}/tests"
-          infra_dir="${root}/external-infra/slurm-atf/infra"
-          build_dir="${root}/build"
-          output_dir="${root}/result"
-          # The ATF user needs directory traversal, but not listing access, to
-          # execute the copied harness and tests below the CI user's home.
-          chmod o+x "${HOME}"
-          mkdir -p "${output_dir}"
-          set +e
-          "${tests_dir}/nebius/ci/atf/run-full-suite.sh" \
-            "${source_dir}" \
-            "${tests_dir}" \
-            "${infra_dir}" \
-            "${build_dir}" \
-            "${output_dir}" \
-            "${run_id}" \
-            "${release_line}" \
-            "${source_commit}" \
-            "${tests_commit}" \
-            "${atf_profile}" \
-            2>&1 | tee "${root}/orchestration.log"
-          status=${PIPESTATUS[0]}
-          set -e
-          exit "${status}"
-          REMOTE
+            'sudo test -f /etc/slurm-atf-disposable && sudo -n true'
 
-      - if: always() && steps.wait_vm.outcome == 'success'
+      - id: remote_pytest
+        name: Run Python tests on the prepared VM
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          remote_root="/home/${SLURM_ATF_SSH_USER}/slurm-atf"
+          run_id="${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          tests/nebius/ci/atf/run-remote-phase.sh \
+            pytest \
+            "${NEBIUS_VM_PUBLIC_IP}" \
+            "${remote_root}" \
+            "${run_id}" \
+            "${{ inputs.release_line }}" \
+            "${{ needs.expect.outputs.source_commit }}" \
+            "${{ needs.expect.outputs.tests_commit }}" \
+            "${{ inputs.atf_profile }}"
+
+      - if: always()
         name: Collect complete ATF evidence
         continue-on-error: true
         run: |
           set -euo pipefail
-          mkdir -p atf-result
           remote_root="/home/${SLURM_ATF_SSH_USER}/slurm-atf"
           scp \
             -i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
@@ -434,57 +593,45 @@ jobs:
             -o "UserKnownHostsFile=${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" \
             -r "${SLURM_ATF_SSH_USER}@${NEBIUS_VM_PUBLIC_IP}:${remote_root}/result/." \
             atf-result/ || true
-          scp \
-            -i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
-            -o BatchMode=yes \
-            -o ConnectTimeout=10 \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=6 \
-            -o StrictHostKeyChecking=yes \
-            -o "UserKnownHostsFile=${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" \
-            "${SLURM_ATF_SSH_USER}@${NEBIUS_VM_PUBLIC_IP}:${remote_root}/orchestration.log" \
-            atf-result/orchestration.log || true
+          for phase in expect pytest; do
+            scp \
+              -i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o StrictHostKeyChecking=yes \
+              -o "UserKnownHostsFile=${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" \
+              "${SLURM_ATF_SSH_USER}@${NEBIUS_VM_PUBLIC_IP}:${remote_root}/orchestration-${phase}.log" \
+              "atf-result/orchestration-${phase}.log" || true
+          done
           nebius compute instance get \
             --profile "${NEBIUS_CLI_PROFILE}" \
             --format json \
             --id "${NEBIUS_VM_ID}" >atf-result/nebius-instance-final.json || true
 
-      - if: always() && steps.create_vm.outcome != 'skipped'
-        name: Delete disposable Nebius VM
-        env:
-          KEEP_VM_ON_FAILURE: ${{ inputs.keep_vm_on_failure }}
-          REMOTE_TEST_OUTCOME: ${{ steps.remote_test.outcome }}
-        run: |
-          set -euo pipefail
-          if [[ "${KEEP_VM_ON_FAILURE}" == true && "${REMOTE_TEST_OUTCOME}" != success ]]; then
-            {
-              echo
-              echo "> [!WARNING]"
-              echo "> VM kept because the ATF run failed and keep_vm_on_failure=true."
-              echo "> Delete \`${NEBIUS_VM_NAME}\` manually after debugging."
-            } >>"${GITHUB_STEP_SUMMARY}"
-            exit 0
-          fi
-          tests/nebius/ci/cloud/nebius/delete-vm.sh
-
       - id: metadata
-        if: always() && steps.remote_test.outcome == 'success'
+        if: always() && steps.remote_pytest.outcome == 'success'
         name: Record reproducibility metadata
         run: |
           set -euo pipefail
           test -s atf-result/junit.xml
+          test -s atf-result/expect-junit.xml
+          test -s atf-result/python-junit.xml
           test -s atf-result/image-metadata.json
           test -s atf-result/run-manifest.json
           test -s atf-result/pytest-exit-status
+          expect_status="$(<atf-result/expect-exit-status)"
+          python_status="$(<atf-result/python-exit-status)"
           pytest_status="$(<atf-result/pytest-exit-status)"
+          [[ "${expect_status}" == 0 || "${expect_status}" == 1 ]]
+          [[ "${python_status}" == 0 || "${python_status}" == 1 ]]
           [[ "${pytest_status}" == 0 || "${pytest_status}" == 1 ]]
           test "$(jq -er '.schema' atf-result/run-manifest.json)" = 1
           test "$(jq -er '.release.line' atf-result/run-manifest.json)" = \
             "${{ inputs.release_line }}"
           test "$(jq -er '.release.commit' atf-result/run-manifest.json)" = \
-            "${{ steps.checkout_metadata.outputs.source_commit }}"
+            "${{ needs.expect.outputs.source_commit }}"
           test "$(jq -er '.tests.master_commit' atf-result/run-manifest.json)" = \
-            "${{ steps.checkout_metadata.outputs.tests_commit }}"
+            "${{ needs.expect.outputs.tests_commit }}"
           test "$(jq -er '.atf.profile' atf-result/run-manifest.json)" = \
             "${{ inputs.atf_profile }}"
           jq -e '.schema == 1' atf-result/image-metadata.json >/dev/null
@@ -495,15 +642,17 @@ jobs:
             --arg kind "${{ inputs.run_kind }}" \
             --arg release_line "${{ inputs.release_line }}" \
             --arg source_ref "${GITHUB_REF}" \
-            --arg source_commit "${{ steps.checkout_metadata.outputs.source_commit }}" \
-            --arg tests_commit "${{ steps.checkout_metadata.outputs.tests_commit }}" \
+            --arg source_commit "${{ needs.expect.outputs.source_commit }}" \
+            --arg tests_commit "${{ needs.expect.outputs.tests_commit }}" \
             --arg infra_repository nebius/slurm-deb-packages \
             --arg infra_commit "${ATF_INFRA_COMMIT}" \
             --arg image_id "${NEBIUS_VM_IMAGE_ID}" \
-            --arg vm_shape "${{ steps.profile.outputs.vm_shape }}" \
+            --arg vm_shape "${{ needs.expect.outputs.vm_shape }}" \
             --arg atf_profile "${{ inputs.atf_profile }}" \
             --arg junit_sha256 "${junit_sha256}" \
             --arg pytest_status "${pytest_status}" \
+            --arg expect_status "${expect_status}" \
+            --arg python_status "${python_status}" \
             --arg run_id "${GITHUB_RUN_ID}" \
             --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
             --arg run_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
@@ -515,16 +664,22 @@ jobs:
               tests: {commit: $tests_commit},
               infrastructure: {repository: $infra_repository, commit: $infra_commit},
               vm: {image_id: $image_id, shape: $vm_shape, atf_profile: $atf_profile},
-              result: {junit_sha256: $junit_sha256, pytest_exit_status: ($pytest_status | tonumber)},
+              result: {
+                junit_sha256: $junit_sha256,
+                pytest_exit_status: ($pytest_status | tonumber),
+                expect_exit_status: ($expect_status | tonumber),
+                python_exit_status: ($python_status | tonumber)
+              },
               workflow: {run_id: $run_id, run_attempt: $run_attempt, run_url: $run_url}
             }' >atf-result/run-metadata.json
 
           echo "artifact_name=${artifact_name}" >>"${GITHUB_OUTPUT}"
           {
-            echo
             echo "### ATF evidence"
             echo
-            echo "- Raw pytest exit status: \`${pytest_status}\`"
+            echo "- Expect exit status: \`${expect_status}\`"
+            echo "- Python exit status: \`${python_status}\`"
+            echo "- Aggregate pytest exit status: \`${pytest_status}\`"
             echo "- Artifact: \`${artifact_name}\`"
             echo "- JUnit SHA256: \`${junit_sha256}\`"
           } >>"${GITHUB_STEP_SUMMARY}"
@@ -538,8 +693,89 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - if: always() && (steps.remote_test.outcome != 'success' || steps.metadata.outcome != 'success')
-        name: Fail after evidence collection and cleanup
+      - if: always() && (steps.remote_pytest.outcome != 'success' || steps.metadata.outcome != 'success')
+        name: Fail after final evidence collection
         run: |
-          echo "Full Slurm ATF execution did not produce valid evidence; inspect the uploaded artifact." >&2
+          echo "Python ATF phase did not produce valid complete evidence; inspect the uploaded artifact." >&2
           exit 1
+
+  cleanup:
+    name: Delete the disposable Nebius VM
+    needs:
+      - expect
+      - pytest
+    if: always()
+    runs-on: ubuntu-24.04
+    environment: e2e
+    timeout-minutes: 30
+    env:
+      ATF_CLOUD_PROFILE: ${{ inputs.atf_profile == 'h200' && vars.SLURM_ATF_H200_PROFILE || vars.SLURM_ATF_PROFILE }}
+      NEBIUS_CLI_VERSION: 0.12.253
+      NEBIUS_CLI_PROFILE: ${{ inputs.nebius_cli_profile }}
+      NEBIUS_VM_NAME: slurm-atf-${{ github.run_id }}-${{ github.run_attempt }}
+      NEBIUS_VM_ID: ${{ needs.expect.outputs.vm_id }}
+      KEEP_VM_ON_FAILURE: ${{ inputs.keep_vm_on_failure }}
+      EXPECT_RESULT: ${{ needs.expect.result }}
+      PYTEST_RESULT: ${{ needs.pytest.result }}
+
+    steps:
+      - name: Checkout the VM lifecycle tool
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tests_ref }}
+          path: tests
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install yq
+        uses: frenck/action-setup-yq@c4b5be8b4a215c536a41d436757d9feb92836d4f # v1.0.2
+        with:
+          version: v4.44.6
+
+      - name: Resolve the Nebius project
+        run: |
+          set -euo pipefail
+          test -n "${ATF_CLOUD_PROFILE}"
+          project_id="$(yq -er '.nebius_project_id' <<<"${ATF_CLOUD_PROFILE}")"
+          [[ "${project_id}" != *$'\n'* ]]
+          echo "NEBIUS_PROJECT_ID=${project_id}" >>"${GITHUB_ENV}"
+
+      - name: Install Nebius CLI
+        env:
+          NEBIUS_INSTALL_FOLDER: ${{ github.workspace }}/bin
+        run: |
+          set -euo pipefail
+          mkdir -p "${NEBIUS_INSTALL_FOLDER}"
+          curl -sSL https://storage.eu-north1.nebius.cloud/cli/install.sh | bash
+          echo "${NEBIUS_INSTALL_FOLDER}" >>"${GITHUB_PATH}"
+
+      - name: Configure Nebius CLI
+        env:
+          NEBIUS_CLI_CONFIG: ${{ vars.NEBIUS_CLI_CONFIG }}
+          NEBIUS_PRIVATE_KEY: ${{ secrets.NEBIUS_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${NEBIUS_CLI_CONFIG}"
+          test -n "${NEBIUS_PRIVATE_KEY}"
+          mkdir -p "${HOME}/.nebius"
+          printf '%s\n' "${NEBIUS_CLI_CONFIG}" >"${HOME}/.nebius/config.yaml"
+          yq -e '.profiles[strenv(NEBIUS_CLI_PROFILE)] != null' \
+            "${HOME}/.nebius/config.yaml" >/dev/null
+          yq -i \
+            '.profiles[strenv(NEBIUS_CLI_PROFILE)]["private-key"] = strenv(NEBIUS_PRIVATE_KEY)' \
+            "${HOME}/.nebius/config.yaml"
+          chmod 600 "${HOME}/.nebius/config.yaml"
+
+      - name: Delete or retain the VM
+        run: |
+          set -euo pipefail
+          if [[ "${KEEP_VM_ON_FAILURE}" == true && \
+            ("${EXPECT_RESULT}" != success || "${PYTEST_RESULT}" != success) ]]; then
+            {
+              echo "> [!WARNING]"
+              echo "> VM kept because an ATF phase failed and keep_vm_on_failure=true."
+              echo "> Delete \`${NEBIUS_VM_NAME}\` manually after debugging."
+            } >>"${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          tests/nebius/ci/cloud/nebius/delete-vm.sh

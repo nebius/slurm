@@ -105,6 +105,11 @@ Bring the applicable documentation, test suite, and CI workflow files from
 and open a pull request into `nebius/26.05`. This pull request establishes the
 common test baseline for all subsequent Nebius patches on the release.
 
+Before merging `NB-0001`, publish the vanilla full-ATF baseline and add its
+immutable release tag to `nebius/ci/atf/baselines/26.05.txt` in the same pull
+request. The detailed procedure is in
+[Full ATF baseline and patch comparison](#full-atf-baseline-and-patch-comparison).
+
 After `NB-0001` is merged, create each remaining `patch/NB-*` branch from the
 updated `origin/nebius/26.05`. Apply patches in the order recorded in
 `PATCHES.md` and submit each logical change through a separate reviewed pull
@@ -405,3 +410,90 @@ Set `keep_vm_on_failure=true` only for intentional SSH debugging and delete
 the retained VM manually afterwards. Once this manual workflow is stable, add
 a `pull_request` trigger for `nebius/**` branches to make it a required merge
 check.
+
+### Full ATF baseline and patch comparison
+
+The full workflow runs the complete Python ATF suite on the same prepared
+Nebius image used by every compared run. It intentionally separates two
+operations:
+
+1. [`Slurm ATF vanilla baseline`](../.github/workflows/slurm-atf-baseline.yml)
+   builds the release while `NB-0001` contains only documentation, tests, and
+   CI changes. It publishes the complete evidence as an immutable GitHub
+   Release and also keeps a 30-day Actions artifact.
+2. [`Slurm ATF patch comparison`](../.github/workflows/slurm-atf-candidate.yml)
+   builds a later patch but checks out the common tests from the exact
+   baseline commit. It compares every JUnit testcase with the published
+   vanilla result.
+
+The baseline run may contain failures already present in the vanilla release.
+Its raw pytest exit status is recorded rather than used as the gate. A patch
+passes when every common testcase either keeps its baseline outcome or
+improves to `passed`, no baseline test disappears, and any candidate-only
+testcase passes. Changing a known failure into a skip or another failure mode
+still fails the comparison; a patch cannot hide it by skipping or removing
+the test.
+
+#### Creating the baseline in `NB-0001`
+
+Push `patch/NB-0001-sync-docs-and-tests`, then run the baseline workflow on
+that exact ref:
+
+```sh
+gh workflow run slurm-atf-baseline.yml \
+  --ref patch/NB-0001-sync-docs-and-tests \
+  -f release_line=26.05 \
+  -f upstream_branch=slurm-26.05 \
+  -f nebius_cli_profile=default \
+  -f keep_vm_on_failure=false
+```
+
+The workflow first verifies that the selected clean mirror commit is an
+ancestor and that `NB-0001` changes only `.github/`, `nebius/`, `testsuite/`,
+documentation, and Markdown files. Product changes abort publication.
+
+When the run completes, copy the tag printed in its summary into the one-line
+pointer file `nebius/ci/atf/baselines/26.05.txt`:
+
+```text
+slurm-atf-baseline-26.05-<64-character-baseline-key>
+```
+
+Commit that pointer to `NB-0001` before merging it. The release contains the
+JUnit report, pytest and daemon logs, generated configuration, package and VM
+metadata, and SHA256 checksums. An existing tag is never overwritten.
+This also works with squash merging: the release tag keeps the pre-merge test
+commit reachable, while later candidates are tied to the recorded clean
+`slurm-<release>` ancestor rather than to a particular merge strategy.
+
+Before publishing the first baseline, enable
+[GitHub release immutability](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/establish-provenance-and-integrity/prevent-release-changes)
+under **Settings → Releases → Enable release immutability**. The workflow
+itself refuses to overwrite an existing baseline; the repository setting
+additionally locks the published tag and assets against later manual changes.
+
+#### Testing later patches
+
+Pull requests targeting `nebius/**` run the patch comparison automatically.
+The workflow reads the pointer specifically from the target release branch
+(a patch cannot replace its own comparison input), verifies the
+baseline archive and provenance, and uses the baseline's exact test commit,
+ATF infrastructure commit, image, VM shape, and profile.
+
+A manual rerun normally needs only the release ref; it reads the same pointer:
+
+```sh
+gh workflow run slurm-atf-candidate.yml \
+  --ref patch/NB-0002-short-description \
+  -f release_line=26.05 \
+  -f nebius_cli_profile=default \
+  -f keep_vm_on_failure=false
+```
+
+The optional `baseline_tag` input overrides the pointer for diagnosis. Do not
+use an override as the normal merge result: the committed pointer is the
+reviewed comparison contract for the release.
+
+After a comparison, two 30-day Actions artifacts are available: the complete
+candidate evidence and a smaller A/B report in Markdown and JSON. The vanilla
+evidence remains permanently available from its GitHub Release.

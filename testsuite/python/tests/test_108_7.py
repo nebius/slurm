@@ -24,6 +24,8 @@ file_pattern = re.compile(r"01\s+\d+\n" r"02\s+\d+\n")
 
 @pytest.fixture(scope="module", autouse=True)
 def setup():
+    global job_cpus
+
     atf.require_config_parameter_excludes("PreemptMode", "GANG")
 
     # Ensure that memory is tracked
@@ -36,6 +38,9 @@ def setup():
     atf.require_nodes(1, [("CPUs", job_cpus), ("RealMemory", job_mem * 2)])
 
     atf.require_slurm_running()
+
+    node = next(iter(atf.nodes))
+    job_cpus = int(atf.get_node_parameter(node, "cpus"))
 
 
 # Helper fixtures

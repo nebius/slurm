@@ -16,7 +16,7 @@ def setup():
     atf.require_config_parameter("SelectTypeParameters", "CR_CPU")
     atf.require_config_parameter("AccountingStorageType", "accounting_storage/slurmdbd")
     atf.require_config_parameter("GresTypes", "r1,r2")
-    atf.require_nodes(1, [("Gres", "r1:1,r2:a:1"), ("CPUs", "2")])
+    atf.require_nodes(1, [("Gres", "r1:1,r2:a:1"), ("CPUs", 2)])
     resource_file = f"{atf.module_tmp_path}/resource1"
     atf.run_command(f"touch {resource_file}")
     atf.require_config_parameter(

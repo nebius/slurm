@@ -5,9 +5,13 @@ import pytest
 
 import atf
 
+node_cpus = 1
+
 
 @pytest.fixture(scope="module", autouse=True)
 def setup():
+    global node_cpus
+
     atf.require_config_parameter(
         "PartitionName",
         {
@@ -21,6 +25,9 @@ def setup():
     atf.require_config_parameter("DefMemPerNode", 256)
 
     atf.require_slurm_running()
+
+    node = next(iter(atf.nodes))
+    node_cpus = int(atf.get_node_parameter(node, "cpus"))
 
 
 def test_oversubscribe_only():
@@ -66,13 +73,17 @@ def test_overlapping_oversubscribe():
     Jobs without -s on overlapping OverSubscribe=YES partitions shouldn't run concurrently.
     """
     # Submit first job to p1 without --oversubscribe
-    job_id1 = atf.submit_job_sbatch("-p p1 --wrap='sleep infinity'", fatal=True)
+    job_id1 = atf.submit_job_sbatch(
+        f"-c{node_cpus} -p p1 --wrap='sleep infinity'", fatal=True
+    )
 
     # Wait for job 1 to start running
     atf.wait_for_job_state(job_id1, "RUNNING", fatal=True)
 
     # Submit second job to p2 without --oversubscribe
-    job_id2 = atf.submit_job_sbatch("-p p2 --wrap='sleep infinity'", fatal=True)
+    job_id2 = atf.submit_job_sbatch(
+        f"-c{node_cpus} -p p2 --wrap='sleep infinity'", fatal=True
+    )
 
     # Verify job 2 is PENDING with Reason=Resources
     assert atf.wait_for_job_state(

@@ -83,17 +83,22 @@ def slurmdb(setup):
 
 @pytest.fixture(scope="function")
 def admin_level(setup):
-    atf.run_command(
-        f"sacctmgr -i add user {local_cluster_name} defaultaccount=root AdminLevel=Admin",
-        user=atf.properties["slurm-user"],
-        fatal=True,
-    )
+    def ensure_local_admin():
+        atf.run_command(
+            f"sacctmgr -i add user {local_user_name} cluster={local_cluster_name} account=root defaultaccount=root AdminLevel=Admin",
+            user=atf.properties["slurm-user"],
+            fatal=False,
+        )
+        atf.run_command(
+            f"sacctmgr -i modify user where name={local_user_name} cluster={local_cluster_name} set defaultaccount=root AdminLevel=Admin",
+            user=atf.properties["slurm-user"],
+            fatal=True,
+        )
+
+    ensure_local_admin()
     yield
     atf.cancel_all_jobs()
-    atf.run_command(
-        f"sacctmgr -i delete user {local_cluster_name}",
-        user=atf.properties["slurm-user"],
-    )
+    ensure_local_admin()
 
 
 @pytest.fixture(scope="function")

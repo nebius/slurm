@@ -42,6 +42,9 @@ jobs:
       baseline_tag: ${{ steps.baseline.outputs.baseline_tag }}
       release_line: ${{ steps.baseline.outputs.release_line }}
       tests_commit: ${{ steps.baseline.outputs.tests_commit }}
+      image_id: ${{ steps.baseline.outputs.image_id }}
+      atf_profile: ${{ steps.baseline.outputs.atf_profile }}
+      vm_shape: ${{ steps.baseline.outputs.vm_shape }}
     steps:
       - name: Checkout the candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -117,11 +120,17 @@ jobs:
           baseline_source="$(jq -er '.source.commit' baseline-evidence/run-metadata.json)"
           tests_commit="$(jq -er '.tests.commit' baseline-evidence/run-metadata.json)"
           upstream_commit="$(jq -er '.upstream_commit' "${descriptor}")"
+          image_id="$(jq -er '.vm.image_id' baseline-evidence/run-metadata.json)"
+          atf_profile="$(jq -er '.vm.atf_profile' baseline-evidence/run-metadata.json)"
+          vm_shape="$(jq -er '.vm.shape' baseline-evidence/run-metadata.json)"
           [[ "${baseline_source}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${tests_commit}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${upstream_commit}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${image_id}" =~ ^computeimage-[a-z0-9]+$ ]]
+          [[ "${atf_profile}" == generic || "${atf_profile}" == b200 || \
+            "${atf_profile}" == h200 ]]
+          [[ "${vm_shape}" != *$'\n'* && -n "${vm_shape}" ]]
           test "$(jq -er '.kind' baseline-evidence/run-metadata.json)" = baseline
-          test "$(jq -er '.vm.image_id' baseline-evidence/run-metadata.json)" = computeimage-e00sphs75y9ej9nw9j
           test "$(jq -er '.result.junit_sha256' baseline-evidence/run-metadata.json)" = \
             "$(sha256sum baseline-evidence/junit.xml | awk '{print $1}')"
           git merge-base --is-ancestor "${upstream_commit}" HEAD
@@ -130,6 +139,9 @@ jobs:
             echo "baseline_tag=${baseline_tag}"
             echo "release_line=${release_line}"
             echo "tests_commit=${tests_commit}"
+            echo "image_id=${image_id}"
+            echo "atf_profile=${atf_profile}"
+            echo "vm_shape=${vm_shape}"
           } >>"${GITHUB_OUTPUT}"
           {
             echo "### Patch comparison input"
@@ -138,6 +150,8 @@ jobs:
             echo "- Clean upstream: \`${upstream_commit}\`"
             echo "- Baseline source: \`${baseline_source}\`"
             echo "- Common tests: \`${tests_commit}\`"
+            echo "- Image: \`${image_id}\`"
+            echo "- VM: \`${vm_shape}\` (\`${atf_profile}\`)"
             echo "- Candidate: \`$(git rev-parse HEAD)\`"
           } >>"${GITHUB_STEP_SUMMARY}"
 
@@ -149,6 +163,9 @@ jobs:
       run_kind: candidate
       release_line: ${{ needs.prepare.outputs.release_line }}
       tests_ref: ${{ needs.prepare.outputs.tests_commit }}
+      image_id: ${{ needs.prepare.outputs.image_id }}
+      atf_profile: ${{ needs.prepare.outputs.atf_profile }}
+      expected_vm_shape: ${{ needs.prepare.outputs.vm_shape }}
       nebius_cli_profile: ${{ inputs.nebius_cli_profile || 'default' }}
       keep_vm_on_failure: ${{ inputs.keep_vm_on_failure || false }}
     secrets: inherit

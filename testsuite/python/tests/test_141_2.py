@@ -34,6 +34,10 @@ def suspend_time_val(value):
 
 @pytest.fixture
 def setup(request):
+    # Keep this cloud configuration test independent of an accounting-enabled
+    # base profile; no assertion in this module exercises accounting.
+    atf.require_config_parameter("AccountingStorageType", "accounting_storage/none")
+
     atf.require_nodes(1, [("CPUs", 4), ("RealMemory", 40)])
     atf.require_config_parameter_includes("ReconfigFlags", "KeepPartInfo")
     atf.require_config_parameter_includes("ReconfigFlags", "KeepPartState")
@@ -125,16 +129,17 @@ def test_cloud_options(setup):
     assert parts["p3"]["SuspendTime"] == infinite_option_str
 
     nodes = atf.get_nodes()
-    assert nodes["node1"]["suspend_time"] == suspend_time_val(g_suspend_time)
+    base_node = next(node for node in nodes if node not in {"d1", "d2"})
+    assert nodes[base_node]["suspend_time"] == suspend_time_val(g_suspend_time)
     assert nodes["d1"]["suspend_time"] == suspend_time_val(g_suspend_time)
     assert nodes["d2"]["suspend_time"] == suspend_time_val(n_suspend_time)
 
     atf.run_command(
-        "scontrol update partitionname=p1 nodes=node1,d[1-2]",
+        f"scontrol update partitionname=p1 nodes={base_node},d[1-2]",
         user=atf.properties["slurm-user"],
     )
     nodes = atf.get_nodes()
-    assert nodes["node1"]["suspend_time"] == suspend_time_val(p1_suspend_time)
+    assert nodes[base_node]["suspend_time"] == suspend_time_val(p1_suspend_time)
     assert nodes["d1"]["suspend_time"] == suspend_time_val(p1_suspend_time)
     assert nodes["d2"]["suspend_time"] == suspend_time_val(n_suspend_time)
 
@@ -143,11 +148,11 @@ def test_cloud_options(setup):
     # - the largest partition
     # - global SuspendTime
     atf.run_command(
-        "scontrol update partitionname=p2 nodes=node1,d[1-2]",
+        f"scontrol update partitionname=p2 nodes={base_node},d[1-2]",
         user=atf.properties["slurm-user"],
     )
     nodes = atf.get_nodes()
-    assert nodes["node1"]["suspend_time"] == suspend_time_val(p2_suspend_time)
+    assert nodes[base_node]["suspend_time"] == suspend_time_val(p2_suspend_time)
     assert nodes["d1"]["suspend_time"] == suspend_time_val(p2_suspend_time)
     assert nodes["d2"]["suspend_time"] == suspend_time_val(n_suspend_time)
 
@@ -170,6 +175,6 @@ def test_cloud_options(setup):
     assert parts["p3"]["SuspendTime"] == infinite_option_str
 
     nodes = atf.get_nodes()
-    assert nodes["node1"]["suspend_time"] == suspend_time_val(p2_suspend_time)
+    assert nodes[base_node]["suspend_time"] == suspend_time_val(p2_suspend_time)
     assert nodes["d1"]["suspend_time"] == suspend_time_val(p2_suspend_time)
     assert nodes["d2"]["suspend_time"] == suspend_time_val(n_suspend_time)

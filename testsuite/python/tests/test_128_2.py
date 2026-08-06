@@ -7,9 +7,13 @@ import atf
 
 pytestmark = pytest.mark.slow
 
+job_cpus = 2
+
 
 @pytest.fixture(scope="module", autouse=True)
 def setup():
+    global job_cpus
+
     atf.require_config_parameter("PreemptType", "preempt/partition_prio")
     atf.require_config_parameter("PreemptMode", "SUSPEND,GANG")
     atf.require_config_parameter_includes("SchedulerParameters", ("bf_interval", 1))
@@ -26,6 +30,9 @@ def setup():
 
     atf.require_version((26, 5), "sbin/slurmctld")
     atf.require_slurm_running()
+
+    node = next(iter(atf.nodes))
+    job_cpus = int(atf.get_node_parameter(node, "cpus"))
 
 
 @pytest.mark.parametrize(
@@ -49,7 +56,7 @@ def test_preempt_exempt_time(preempt_mode, preempted_state):
     atf.set_config_parameter("PreemptExemptTime", "00:00:10")
 
     job_id1 = atf.submit_job_sbatch(
-        '-c2 -o /dev/null -p lowprio --wrap "sleep infinity"',
+        f'-c{job_cpus} -o /dev/null -p lowprio --wrap "sleep infinity"',
         fatal=True,
     )
     assert atf.wait_for_job_state(
@@ -57,7 +64,7 @@ def test_preempt_exempt_time(preempt_mode, preempted_state):
     ), f"Low-priority job ({job_id1}) did not start"
 
     job_id2 = atf.submit_job_sbatch(
-        '-c2 -o /dev/null -p highprio --wrap "sleep 20"',
+        f'-c{job_cpus} -o /dev/null -p highprio --wrap "sleep 20"',
         fatal=True,
     )
 

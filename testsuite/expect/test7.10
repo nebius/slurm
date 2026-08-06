@@ -105,7 +105,11 @@ subtest {[regexp "(uid=0)" $output]} "Verify that user namespaces allows uid 0"
 #
 # Submit a job while faking uid=0; verify slurm doesn't submit the job as actual root
 #
-set output [run_command_output -user $testsuite_user "$bin_unshare --map-root-user --mount bash -c 'cp $ca_cert_path $tmp_file && mount --bind $tmp_file $ca_cert_path && $srun $bin_id'"]
+if {$using_tls} {
+    set output [run_command_output -user $testsuite_user "$bin_unshare --map-root-user --mount bash -c 'cp $ca_cert_path $tmp_file && mount --bind $tmp_file $ca_cert_path && $srun $bin_id'"]
+} else {
+    set output [run_command_output -user $testsuite_user "$bin_unshare --map-root-user --mount $srun $bin_id"]
+}
 subtest {[regexp $testsuite_user $output]} "Verify slurm user is job user"
 subtest {![regexp "(uid=0)" $output]} "Verify slurm user isn't able to escalate to root"
 

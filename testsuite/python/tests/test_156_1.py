@@ -9,7 +9,14 @@ import atf
 # Setup
 @pytest.fixture(scope="module", autouse=True)
 def setup():
-    atf.require_nodes(2, [("ThreadsPerCore", 2), ("Cores", 4), ("Sockets", 1)])
+    # The three concurrent steps below need 8 logical CPUs per node.  Without
+    # an explicit CPUs value auto-config retains the generic profile's CPU
+    # count while changing the topology fields, producing an inconsistent
+    # CPUs=4, Sockets=1, Cores=4, ThreadsPerCore=2 node.
+    atf.require_nodes(
+        2,
+        [("CPUs", 8), ("ThreadsPerCore", 2), ("Cores", 4), ("Sockets", 1)],
+    )
     atf.require_slurm_running()
 
 

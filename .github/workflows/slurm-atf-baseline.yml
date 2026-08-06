@@ -18,6 +18,19 @@ on:
         required: true
         default: default
         type: string
+      image_id:
+        description: Immutable Nebius image compatible with the selected VM platform
+        required: true
+        default: computeimage-e00sphs75y9ej9nw9j
+        type: string
+      atf_profile:
+        description: ATF hardware profile represented by the image and VM shape
+        required: true
+        default: generic
+        type: choice
+        options:
+          - generic
+          - h200
       keep_vm_on_failure:
         description: Keep the VM after an infrastructure failure for SSH debugging
         required: true
@@ -98,6 +111,8 @@ jobs:
       run_kind: baseline
       release_line: ${{ inputs.release_line }}
       tests_ref: ${{ needs.prepare.outputs.source_commit }}
+      image_id: ${{ inputs.image_id }}
+      atf_profile: ${{ inputs.atf_profile }}
       nebius_cli_profile: ${{ inputs.nebius_cli_profile }}
       keep_vm_on_failure: ${{ inputs.keep_vm_on_failure }}
     secrets: inherit

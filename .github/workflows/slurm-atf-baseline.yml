@@ -129,12 +129,16 @@ jobs:
           set -euo pipefail
           test -s baseline-evidence/junit.xml
           test -s baseline-evidence/image-metadata.json
+          test -s baseline-evidence/pytest-exit-status
+          test -s baseline-evidence/run-manifest.json
           test -s baseline-evidence/run-metadata.json
           test -z "$(find baseline-evidence -type l -print -quit)"
           test "$(jq -er '.kind' baseline-evidence/run-metadata.json)" = baseline
           test "$(jq -er '.release_line' baseline-evidence/run-metadata.json)" = "${RELEASE_LINE}"
           test "$(jq -er '.source.commit' baseline-evidence/run-metadata.json)" = "${SOURCE_COMMIT}"
           test "$(jq -er '.tests.commit' baseline-evidence/run-metadata.json)" = "${SOURCE_COMMIT}"
+          test "$(jq -er '.result.pytest_exit_status' baseline-evidence/run-metadata.json)" = \
+            "$(<baseline-evidence/pytest-exit-status)"
           test "$(jq -er '.result.junit_sha256' baseline-evidence/run-metadata.json)" = \
             "$(sha256sum baseline-evidence/junit.xml | awk '{print $1}')"
 
@@ -225,6 +229,17 @@ jobs:
           grep -Fxq "${ASSET_PREFIX}.tar.gz" <<<"${assets}"
           grep -Fxq "${ASSET_PREFIX}.tar.gz.sha256" <<<"${assets}"
           grep -Fxq "${ASSET_PREFIX}.json" <<<"${assets}"
+          mkdir -p existing-baseline
+          gh release download "${RELEASE_TAG}" \
+            --pattern "${ASSET_PREFIX}.json" \
+            --dir existing-baseline
+          descriptor="existing-baseline/${ASSET_PREFIX}.json"
+          test "$(jq -er '.release_tag' "${descriptor}")" = "${RELEASE_TAG}"
+          test "$(jq -er '.baseline_key' "${descriptor}")" = \
+            "${{ steps.package.outputs.baseline_key }}"
+          diff -u \
+            baseline-identity.json \
+            <(jq -cS '.identity' "${descriptor}")
           echo "Baseline ${RELEASE_TAG} already exists and will not be changed."
           echo "publish=false" >>"${GITHUB_OUTPUT}"
 

@@ -51,7 +51,9 @@ class CompareJunitTest(unittest.TestCase):
             root = Path(tmp)
             baseline = self.report(root, "base.xml", [("tests/a.py::test_a", "passed")])
             candidate = self.report(root, "candidate.xml", [("tests/a.py::test_a", "failed")])
-            result = compare_junit.compare(compare_junit.load(baseline), compare_junit.load(candidate))
+            result = compare_junit.compare(
+                compare_junit.load(baseline), compare_junit.load(candidate)
+            )
             self.assertFalse(result["ok"])
             self.assertEqual(len(result["changed"]), 1)
 
@@ -89,8 +91,12 @@ class CompareJunitTest(unittest.TestCase):
     def test_missing_test_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            baseline = self.report(root, "base.xml", [("tests/a.py::test_a", "passed")])
-            candidate = self.report(root, "candidate.xml", [("tests/b.py::test_b", "passed")])
+            baseline = self.report(
+                root, "base.xml", [("tests/a.py::test_a", "passed")]
+            )
+            candidate = self.report(
+                root, "candidate.xml", [("tests/b.py::test_b", "passed")]
+            )
             self.assertFalse(
                 compare_junit.compare(
                     compare_junit.load(baseline), compare_junit.load(candidate)
@@ -100,7 +106,9 @@ class CompareJunitTest(unittest.TestCase):
     def test_new_test_must_pass(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            baseline = self.report(root, "base.xml", [("tests/a.py::test_a", "passed")])
+            baseline = self.report(
+                root, "base.xml", [("tests/a.py::test_a", "passed")]
+            )
             passing = self.report(
                 root,
                 "passing.xml",
@@ -118,8 +126,33 @@ class CompareJunitTest(unittest.TestCase):
                 ],
             )
             base = compare_junit.load(baseline)
-            self.assertTrue(compare_junit.compare(base, compare_junit.load(passing))["ok"])
-            self.assertFalse(compare_junit.compare(base, compare_junit.load(failing))["ok"])
+            self.assertTrue(
+                compare_junit.compare(base, compare_junit.load(passing))["ok"]
+            )
+            self.assertFalse(
+                compare_junit.compare(base, compare_junit.load(failing))["ok"]
+            )
+
+    def test_duplicate_testcase_identity_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            duplicate = self.report(
+                root,
+                "duplicate.xml",
+                [
+                    ("tests/a.py::test_a", "passed"),
+                    ("tests/a.py::test_a", "failed"),
+                ],
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate testcase identity"):
+                compare_junit.load(duplicate)
+
+    def test_empty_report_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            empty = self.report(root, "empty.xml", [])
+            with self.assertRaisesRegex(ValueError, "contains no testcases"):
+                compare_junit.load(empty)
 
 
 if __name__ == "__main__":

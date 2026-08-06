@@ -45,13 +45,26 @@ def setup_db():
 
     atf.cancel_all_jobs(fatal=True)
 
+    # Deleting the temporary accounts can remove the global user record too.
+    # Recreate the persistent root association so later accounting/REST tests
+    # do not depend on module order.
     atf.run_command(
-        f"sacctmgr -i remove user {atf.get_user_name()} {acct1},{acct2}",
+        f"sacctmgr -i modify user where name={atf.get_user_name()} set DefaultAccount=root AdminLevel=Admin",
         user=atf.properties["slurm-user"],
         quiet=True,
     )
     atf.run_command(
-        f"sacctmgr -i remove account {acct1},{acct2}",
+        f"sacctmgr -i remove account where name={acct},{acct1},{acct2}",
+        user=atf.properties["slurm-user"],
+        quiet=True,
+    )
+    atf.run_command(
+        f"sacctmgr -i add user {atf.get_user_name()} account=root DefaultAccount=root AdminLevel=Admin",
+        user=atf.properties["slurm-user"],
+        quiet=True,
+    )
+    atf.run_command(
+        f"sacctmgr -i modify user where name={atf.get_user_name()} set DefaultAccount=root AdminLevel=Admin",
         user=atf.properties["slurm-user"],
         quiet=True,
     )

@@ -51,8 +51,12 @@ def test_salloc_normal():
     atf.cancel_all_jobs()
 
     if atf.get_version() >= (25, 5):
-        # Test that salloc -n2 is rejected with only one node
-        result = atf.run_command("salloc -Q -n2 true", timeout=3)
+        # Request more CPUs than any single configured node can provide.  The
+        # test only requires a minimum of one CPU, so assuming exactly one
+        # makes it fail on otherwise valid multi-CPU ATF profiles.
+        nodes = atf.get_nodes()
+        too_many_cpus = max(node["cpus"] for node in nodes.values()) + 1
+        result = atf.run_command(f"salloc -Q -N1 -n{too_many_cpus} true", timeout=3)
         assert result["exit_code"] != 0, "Verify salloc failed"
         assert re.search(
             "More processors requested than permitted", result["stderr"]

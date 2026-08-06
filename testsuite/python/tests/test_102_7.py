@@ -47,9 +47,12 @@ def test_modify_job_tres_in_accounting():
     # Wait for job done also in the DB
     atf.wait_for_job_accounted(job_id, field="End", fatal=True)
     energy = next(
-        alloc_tres["count"]
-        for alloc_tres in atf.get_jobs(dbd=True)[job_id]["tres"]["allocated"]
-        if alloc_tres["type"] == "energy"
+        (
+            alloc_tres["count"]
+            for alloc_tres in atf.get_jobs(dbd=True)[job_id]["tres"]["allocated"]
+            if alloc_tres["type"] == "energy"
+        ),
+        0,
     )
     if energy > 0:
         pytest.fail("The AllocTRES in the DB shouldn't contain an energy value yet")

@@ -54,7 +54,7 @@ proc cleanup { } {
 	cancel_job $het_job_id
 }
 
-set het_job_id [submit_job "-t2 -N1 : -N1 --wrap '$bin_sleep 30'"]
+set het_job_id [submit_job "-t10 -N1 : -N1 --wrap '$bin_sleep 300'"]
 wait_for_job -fail $het_job_id "RUNNING"
 
 run_command -fail "$srun -N1 -n1 --jobid=${het_job_id} --het-group=0 mkdir -p $tmp_dir"

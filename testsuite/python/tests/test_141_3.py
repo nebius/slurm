@@ -218,7 +218,7 @@ def test_power_down_action_invalid(current_nodes):
 def test_reboot_force(current_nodes):
     nodelist = atf.node_list_to_range(current_nodes)
     job_id = atf.submit_job_sbatch(
-        f"-N {len(current_nodes)} --wrap 'srun sleep 100'", fatal=True
+        f"--exclusive -N {len(current_nodes)} --wrap 'srun sleep 100'", fatal=True
     )
     for node in current_nodes:
         atf.wait_for_node_state(node, "ALLOCATED", timeout=5, fatal=True)
@@ -270,7 +270,7 @@ def test_reboot_asap(current_nodes):
     for node in current_nodes:
         atf.wait_for_node_state(node, "DRAIN", fatal=True)
     job_id = atf.submit_job_sbatch(
-        f"-N {len(current_nodes)} --wrap 'srun sleep 100'", fatal=True
+        f"--exclusive -N {len(current_nodes)} --wrap 'srun sleep 100'", fatal=True
     )
     atf.wait_for_job_state(job_id, "PENDING", timeout=5, fatal=True)
     for node in current_nodes:

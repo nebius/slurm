@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (($# != 10)); then
-	echo "usage: $0 SOURCE_DIR TESTS_DIR INFRA_DIR BUILD_DIR OUTPUT_DIR RUN_ID RELEASE_LINE SOURCE_COMMIT TESTS_COMMIT ATF_PROFILE" >&2
+if (($# != 11)); then
+	echo "usage: $0 PHASE SOURCE_DIR TESTS_DIR INFRA_DIR BUILD_DIR OUTPUT_DIR RUN_ID RELEASE_LINE SOURCE_COMMIT TESTS_COMMIT ATF_PROFILE" >&2
 	exit 2
 fi
 
+phase="$1"
+shift
 source_dir="$(realpath "$1")"
 tests_dir="$(realpath "$2")"
 infra_dir="$(realpath "$3")"
@@ -27,8 +29,12 @@ mpich_profile="${mpich_device//:/-}"
 mpich_source="${atf_root}/src/mpich-${mpich_version}"
 mpich_build="${atf_root}/build/mpich-${mpich_version}-${mpich_profile}"
 mpich_prefix="${atf_root}/mpich/${mpich_version}-${mpich_profile}"
+run_dir="${atf_root}/results/${run_id}"
+manifest="${run_dir}/run-manifest.json"
 jobs="${BUILD_JOBS:-$(nproc)}"
+phase_status=0
 
+[[ "${phase}" == expect || "${phase}" == pytest ]]
 [[ "${run_id}" =~ ^[a-zA-Z0-9._-]+$ ]]
 [[ "${release_line}" =~ ^[0-9]+\.[0-9]+$ ]]
 [[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]
@@ -42,14 +48,15 @@ test -s /etc/slurm-atf-image.json
 test -f "${source_dir}/META"
 test -x "${source_dir}/configure"
 test -d "${tests_dir}/testsuite/expect"
-test -d "${tests_dir}/testsuite/src"
+test -d "${tests_dir}/testsuite/python/expect"
+test -d "${tests_dir}/testsuite/python/tests"
 test -x "${tests_dir}/testsuite/run-tests"
 test -x "${tests_dir}/testsuite/python/run-tests-python"
+test -f "${tests_dir}/nebius/ci/atf/merge_junit.py"
 test -x "${pmix_prefix}/bin/pmix_info"
 test -x "${openmpi_prefix}/bin/mpirun"
 test -x "${mpich_source}/configure"
 test -x "${infra_dir}/configure-atf.sh"
-test -x "${infra_dir}/run-full-python.sh"
 jq -e '
   .schema == 1 and
   .os.id == "ubuntu" and
@@ -77,148 +84,265 @@ if [[ "${atf_profile}" == h200 ]]; then
 		[[ "${gpu_name}" == *H200* ]]
 	done
 fi
+
 requirements_sha256="$(sha256sum "${infra_dir}/requirements.lock" | awk '{print $1}')"
 test "${requirements_sha256}" = \
 	"$(jq -er '.python_requirements_sha256' /etc/slurm-atf-image.json)"
 
-mkdir -p "${build_dir}" "${output_dir}"
-sudo install -d -o root -g root -m 0755 "${install_dir}"
-sudo find "${install_dir}" -mindepth 1 -delete
-
-bpf_root=/usr
-bpf_uapi_root="${atf_root}/kernel-uapi"
-kernel_bpf_header="/usr/src/linux-headers-$(uname -r)/include/uapi/linux/bpf.h"
-if [[ -f "${kernel_bpf_header}" ]] &&
-	grep -q BPF_TOKEN_CREATE "${kernel_bpf_header}"; then
-	sudo install -D -m 0644 "${kernel_bpf_header}" \
-		"${bpf_uapi_root}/include/linux/bpf.h"
-	bpf_root="${bpf_uapi_root}"
-fi
-
-nvml_args=()
-if [[ -f /usr/local/cuda/include/nvml.h ]]; then
-	nvml_args+=(--with-nvml=/usr/local/cuda)
-fi
-
-cd "${build_dir}"
-PKG_CONFIG_PATH="${pmix_prefix}/lib/pkgconfig" \
-CPPFLAGS="-I${bpf_root}/include" \
-"${source_dir}/configure" \
-	--prefix="${install_dir}" \
-	--sysconfdir="${install_dir}/etc" \
-	--localstatedir=/var/lib/slurm-atf \
-	--runstatedir=/run/slurm-atf \
-	--enable-multiple-slurmd \
-	--enable-pam \
-	"${nvml_args[@]}" \
-	--with-pmix="${pmix_prefix}" \
-	--with-json=/usr \
-	--with-jwt=/usr \
-	--with-yaml=/usr \
-	--with-hdf5=yes \
-	--with-lz4=/usr \
-	--with-hwloc=/usr \
-	--with-bpf="${bpf_root}" \
-	--with-lua \
-	--with-freeipmi=/usr \
-	CFLAGS="-O2 -g3 -fno-omit-frame-pointer"
-
-make -j"${jobs}"
-sudo make install
-sudo make -C contribs/pmi2 install
-sudo make -C contribs/pmi install
-sudo make -C contribs/perlapi install
-for contrib in torque openlava seff; do
-	sudo make -C "contribs/${contrib}" install
-done
-sudo install -o root -g root -m 0755 \
-	"${source_dir}/src/plugins/burst_buffer/datawarp/dw_wlm_cli" \
-	"${install_dir}/sbin/dw_wlm_cli"
-sudo install -o root -g root -m 0755 \
-	"${source_dir}/src/plugins/burst_buffer/datawarp/dwstat" \
-	"${install_dir}/sbin/dwstat"
-
-sudo find "${mpich_build}" -mindepth 1 -delete 2>/dev/null || true
-sudo find "${mpich_prefix}" -mindepth 1 -delete 2>/dev/null || true
-sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
-	"${mpich_build}" "${mpich_prefix}"
-cd "${mpich_build}"
-LD_LIBRARY_PATH="${install_dir}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-"${mpich_source}/configure" \
-	--prefix="${mpich_prefix}" \
-	--with-pmilib=slurm \
-	--with-pmi=pmi2 \
-	--with-pm=none \
-	--with-slurm="${install_dir}" \
-	--with-device="${mpich_device}" \
-	--disable-fortran \
-	CPPFLAGS="-DMISSING_PMI2_KEYVAL_T" \
-	CFLAGS="-O2 -g3 -fno-omit-frame-pointer"
-make -j"${jobs}"
-make install
-
-# The test harness modifies its generated configuration and temporary files.
-# It is a separate checkout from the product source, so granting it to the ATF
-# user cannot alter the candidate that was built above.
-sudo chown -R atf:atf "${tests_dir}"
-
-sudo -u atf -H env \
-	SLURM_SUT_SOURCE_DIR="${source_dir}" \
-	SLURM_SUT_BUILD_DIR="${build_dir}" \
-	SLURM_SUT_INSTALL_DIR="${install_dir}" \
-	SLURM_TESTS_SOURCE_DIR="${tests_dir}" \
-	SLURM_ATF_PROFILE="${atf_profile}" \
-	"${infra_dir}/configure-atf.sh"
-
-release_version="$(awk '$1 == "Version:" {print $2; exit}' "${source_dir}/META")"
-manifest="${output_dir}/run-manifest.json"
-jq -n \
-	--arg release_line "${release_line}" \
-	--arg release_version "${release_version}" \
-	--arg source_commit "${source_commit}" \
-	--arg tests_commit "${tests_commit}" \
-	--arg atf_profile "${atf_profile}" \
-	'{
-	  schema: 1,
-	  release: {
-	    line: $release_line,
-	    version: $release_version,
-	    commit: $source_commit
-	  },
-	  tests: {master_commit: $tests_commit},
-	  atf: {profile: $atf_profile}
-	}' >"${manifest}"
-
-set +e
-sudo -u atf -H env \
-	SLURM_SUT_SOURCE_DIR="${source_dir}" \
-	SLURM_SUT_BUILD_DIR="${build_dir}" \
-	SLURM_SUT_INSTALL_DIR="${install_dir}" \
-	SLURM_TESTS_SOURCE_DIR="${tests_dir}" \
-	SLURM_RELEASE_MANIFEST="${manifest}" \
-	SLURM_ATF_RUN_ID="${run_id}" \
-	"${atf_root}/run-env.sh" "${atf_root}/run-full-python.sh"
-pytest_status=$?
-set -e
-
-run_dir="${atf_root}/results/${run_id}"
-test -s "${run_dir}/junit.xml" || {
-	echo "Full ATF run did not produce ${run_dir}/junit.xml" >&2
-	exit 1
+configure_atf() {
+	sudo -u atf -H env \
+		SLURM_SUT_SOURCE_DIR="${source_dir}" \
+		SLURM_SUT_BUILD_DIR="${build_dir}" \
+		SLURM_SUT_INSTALL_DIR="${install_dir}" \
+		SLURM_TESTS_SOURCE_DIR="${tests_dir}" \
+		SLURM_ATF_PROFILE="${atf_profile}" \
+		"${infra_dir}/configure-atf.sh"
 }
-printf '%s\n' "${pytest_status}" | sudo -u atf tee \
-	"${run_dir}/pytest-exit-status" >/dev/null
-sudo install -o atf -g atf -m 0644 "${manifest}" \
-	"${run_dir}/run-manifest.json"
-sudo install -o atf -g atf -m 0644 /etc/slurm-atf-image.json \
-	"${run_dir}/image-metadata.json"
-sudo rsync -a "${run_dir}/" "${output_dir}/"
-sudo chown -R "$(id -u):$(id -g)" "${output_dir}"
 
-if [[ "${pytest_status}" != 0 && "${pytest_status}" != 1 ]]; then
-	echo "Pytest did not complete normally (exit status ${pytest_status})" >&2
-	exit "${pytest_status}"
-fi
+prepare_build() {
+	mkdir -p "${build_dir}" "${output_dir}"
+	sudo install -d -o root -g root -m 0755 "${install_dir}"
+	sudo find "${install_dir}" -mindepth 1 -delete
 
-echo "Full ATF result created; raw pytest status: ${pytest_status}."
-echo "The raw status is recorded but comparison against the baseline is the gate."
+	bpf_root=/usr
+	bpf_uapi_root="${atf_root}/kernel-uapi"
+	kernel_bpf_header="/usr/src/linux-headers-$(uname -r)/include/uapi/linux/bpf.h"
+	if [[ -f "${kernel_bpf_header}" ]] &&
+		grep -q BPF_TOKEN_CREATE "${kernel_bpf_header}"; then
+		sudo install -D -m 0644 "${kernel_bpf_header}" \
+			"${bpf_uapi_root}/include/linux/bpf.h"
+		bpf_root="${bpf_uapi_root}"
+	fi
+
+	nvml_args=()
+	if [[ -f /usr/local/cuda/include/nvml.h ]]; then
+		nvml_args+=(--with-nvml=/usr/local/cuda)
+	fi
+
+	cd "${build_dir}"
+	PKG_CONFIG_PATH="${pmix_prefix}/lib/pkgconfig" \
+	CPPFLAGS="-I${bpf_root}/include" \
+	"${source_dir}/configure" \
+		--prefix="${install_dir}" \
+		--sysconfdir="${install_dir}/etc" \
+		--localstatedir=/var/lib/slurm-atf \
+		--runstatedir=/run/slurm-atf \
+		--enable-multiple-slurmd \
+		--enable-pam \
+		"${nvml_args[@]}" \
+		--with-pmix="${pmix_prefix}" \
+		--with-json=/usr \
+		--with-jwt=/usr \
+		--with-yaml=/usr \
+		--with-hdf5=yes \
+		--with-lz4=/usr \
+		--with-hwloc=/usr \
+		--with-bpf="${bpf_root}" \
+		--with-lua \
+		--with-freeipmi=/usr \
+		CFLAGS="-O2 -g3 -fno-omit-frame-pointer"
+
+	make -j"${jobs}"
+	sudo make install
+	sudo make -C contribs/pmi2 install
+	sudo make -C contribs/pmi install
+	sudo make -C contribs/perlapi install
+	for contrib in torque openlava seff; do
+		sudo make -C "contribs/${contrib}" install
+	done
+	sudo install -o root -g root -m 0755 \
+		"${source_dir}/src/plugins/burst_buffer/datawarp/dw_wlm_cli" \
+		"${install_dir}/sbin/dw_wlm_cli"
+	sudo install -o root -g root -m 0755 \
+		"${source_dir}/src/plugins/burst_buffer/datawarp/dwstat" \
+		"${install_dir}/sbin/dwstat"
+
+	sudo find "${mpich_build}" -mindepth 1 -delete 2>/dev/null || true
+	sudo find "${mpich_prefix}" -mindepth 1 -delete 2>/dev/null || true
+	sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
+		"${mpich_build}" "${mpich_prefix}"
+	cd "${mpich_build}"
+	LD_LIBRARY_PATH="${install_dir}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+	"${mpich_source}/configure" \
+		--prefix="${mpich_prefix}" \
+		--with-pmilib=slurm \
+		--with-pmi=pmi2 \
+		--with-pm=none \
+		--with-slurm="${install_dir}" \
+		--with-device="${mpich_device}" \
+		--disable-fortran \
+		CPPFLAGS="-DMISSING_PMI2_KEYVAL_T" \
+		CFLAGS="-O2 -g3 -fno-omit-frame-pointer"
+	make -j"${jobs}"
+	make install
+
+	# Tests modify generated configuration and temporary files, but never the
+	# separate source-under-test checkout.
+	sudo chown -R atf:atf "${tests_dir}"
+	configure_atf
+}
+
+write_manifest() {
+	local manifest_tmp
+	local release_version
+	release_version="$(awk '$1 == "Version:" {print $2; exit}' "${source_dir}/META")"
+	manifest_tmp="$(mktemp)"
+	jq -n \
+		--arg release_line "${release_line}" \
+		--arg release_version "${release_version}" \
+		--arg source_commit "${source_commit}" \
+		--arg tests_commit "${tests_commit}" \
+		--arg atf_profile "${atf_profile}" \
+		'{
+		  schema: 1,
+		  release: {
+		    line: $release_line,
+		    version: $release_version,
+		    commit: $source_commit
+		  },
+		  tests: {master_commit: $tests_commit},
+		  atf: {profile: $atf_profile}
+		}' >"${manifest_tmp}"
+	sudo install -o atf -g atf -m 0644 "${manifest_tmp}" "${manifest}"
+	rm -f "${manifest_tmp}"
+	sudo install -o atf -g atf -m 0644 /etc/slurm-atf-image.json \
+		"${run_dir}/image-metadata.json"
+}
+
+capture_inventory() {
+	{
+		echo "run_id=${run_id}"
+		echo "host=$(hostname -f)"
+		echo "slurm_version=$(${install_dir}/bin/sinfo --version)"
+		echo "tests_master_commit=${tests_commit}"
+		echo "atf_profile=${atf_profile}"
+	} | sudo -u atf tee "${run_dir}/run-info.txt" >/dev/null
+	if command -v nvidia-smi >/dev/null 2>&1; then
+		nvidia-smi --query-gpu=index,name,uuid,driver_version,memory.total \
+			--format=csv,noheader |
+			sudo -u atf tee "${run_dir}/gpu-inventory.csv" >/dev/null || \
+			printf '%s\n' "nvidia-smi present but no GPU inventory available" |
+				sudo -u atf tee "${run_dir}/gpu-inventory.csv" >/dev/null
+	else
+		printf '%s\n' "no NVIDIA driver on this VM" |
+			sudo -u atf tee "${run_dir}/gpu-inventory.csv" >/dev/null
+	fi
+	sudo -u atf -H "${atf_root}/run-env.sh" env | sort |
+		sudo -u atf tee "${run_dir}/environment.txt" >/dev/null
+	dpkg-query -W -f='${binary:Package}\t${Version}\n' | sort |
+		sudo -u atf tee "${run_dir}/package-inventory.tsv" >/dev/null
+}
+
+capture_phase_evidence() {
+	local label="$1"
+	local daemon_dir="${run_dir}/daemon-logs/${label}"
+	local config_dir="${run_dir}/config/${label}"
+	sudo install -d -o atf -g atf -m 0755 "${daemon_dir}" "${config_dir}"
+	if [[ -d /var/log/slurm-atf ]]; then
+		sudo rsync -a --delete /var/log/slurm-atf/ "${daemon_dir}/"
+	fi
+	sudo find "${install_dir}/etc" -maxdepth 1 -type f -name '*.conf' \
+		-exec cp -p {} "${config_dir}/" \;
+	sudo chown -R atf:atf "${daemon_dir}" "${config_dir}"
+	sudo -u atf -H bash -c \
+		'cd "$1" && find . -type f -name "*.conf" -print0 | sort -z | xargs -0 -r sha256sum' \
+		_ "${config_dir}" |
+		sudo -u atf tee "${run_dir}/config-${label}.sha256" >/dev/null
+}
+
+run_pytest_group() {
+	local label="$1"
+	local target="$2"
+	local junit_file="${run_dir}/${label}-junit.xml"
+	local log_file="${run_dir}/${label}.out"
+	local status_file="${run_dir}/${label}-exit-status"
+
+	date -u --iso-8601=seconds |
+		sudo -u atf tee "${run_dir}/${label}-started-utc" >/dev/null
+	set +e
+	sudo -u atf -H env \
+		SLURM_SUT_SOURCE_DIR="${source_dir}" \
+		SLURM_SUT_BUILD_DIR="${build_dir}" \
+		SLURM_SUT_INSTALL_DIR="${install_dir}" \
+		SLURM_TESTS_SOURCE_DIR="${tests_dir}" \
+		SLURM_RELEASE_MANIFEST="${manifest}" \
+		SLURM_ATF_RUN_ID="${run_id}" \
+		"${atf_root}/run-env.sh" \
+		"${tests_dir}/testsuite/python/run-tests-python" \
+		--auto-config \
+		-vv \
+		-s \
+		-ra \
+		--tb=long \
+		--durations=200 \
+		--junitxml="${junit_file}" \
+		"${target}" 2>&1 |
+		sudo -u atf tee "${log_file}"
+	phase_status=${PIPESTATUS[0]}
+	set -e
+	printf '%s\n' "${phase_status}" |
+		sudo -u atf tee "${status_file}" >/dev/null
+	date -u --iso-8601=seconds |
+		sudo -u atf tee "${run_dir}/${label}-finished-utc" >/dev/null
+	capture_phase_evidence "${label}"
+}
+
+sync_output() {
+	mkdir -p "${output_dir}"
+	sudo rsync -a --delete "${run_dir}/" "${output_dir}/"
+	sudo chown -R "$(id -u):$(id -g)" "${output_dir}"
+}
+
+case "${phase}" in
+expect)
+	prepare_build
+	sudo -u atf -H mkdir -p "${run_dir}"
+	write_manifest
+	capture_inventory
+	run_pytest_group expect expect
+	sync_output
+	if [[ "${phase_status}" != 0 && "${phase_status}" != 1 ]]; then
+		echo "Expect wrappers did not complete normally (exit status ${phase_status})" >&2
+		exit "${phase_status}"
+	fi
+	echo "Expect phase completed; raw pytest status: ${phase_status}."
+	;;
+pytest)
+	test -x "${install_dir}/bin/sinfo"
+	test -d "${build_dir}"
+	test -s "${manifest}"
+	test -s "${run_dir}/expect-junit.xml"
+	expect_status="$(<"${run_dir}/expect-exit-status")"
+	[[ "${expect_status}" == 0 || "${expect_status}" == 1 ]]
+	configure_atf
+	run_pytest_group python tests
+	# Make the second phase diagnosable even if validation or JUnit merging
+	# below fails. A successful merge is synced once more with final metadata.
+	sync_output
+	if [[ "${phase_status}" != 0 && "${phase_status}" != 1 ]]; then
+		echo "Python tests did not complete normally (exit status ${phase_status})" >&2
+		exit "${phase_status}"
+	fi
+	test -s "${run_dir}/python-junit.xml"
+	sudo -u atf -H python3 "${tests_dir}/nebius/ci/atf/merge_junit.py" \
+		"${run_dir}/expect-junit.xml" \
+		"${run_dir}/python-junit.xml" \
+		"${run_dir}/junit.xml"
+	aggregate_status=0
+	if [[ "${expect_status}" == 1 || "${phase_status}" == 1 ]]; then
+		aggregate_status=1
+	fi
+	printf '%s\n' "${aggregate_status}" |
+		sudo -u atf tee "${run_dir}/pytest-exit-status" >/dev/null
+	{
+		echo "===== EXPECT WRAPPERS ====="
+		sudo cat "${run_dir}/expect.out"
+		echo
+		echo "===== PYTHON TESTS ====="
+		sudo cat "${run_dir}/python.out"
+	} | sudo -u atf tee "${run_dir}/pytest.out" >/dev/null
+	sync_output
+	echo "Full ATF result created; aggregate pytest status: ${aggregate_status}."
+	echo "The raw phase statuses are recorded; comparison against the baseline is the gate."
+	;;
+esac

@@ -460,9 +460,25 @@ check.
 
 ### Full ATF baseline and patch comparison
 
-The full workflow runs the complete Python ATF suite on the same prepared
-Nebius image used by every compared run. It intentionally separates two
-operations:
+The full workflow runs the complete ATF suite on the same prepared Nebius
+image used by every compared run. The expensive work is split across two
+sequential GitHub-hosted jobs so neither job approaches GitHub's six-hour
+execution limit:
+
+1. The first job creates the VM, builds Slurm and its SUT-linked MPICH, then
+   runs only the wrappers under `testsuite/python/expect/`.
+2. The second job reconnects to the same VM using the SSH host key pinned by
+   the first job, resets the disposable ATF configuration and accounting
+   database, then runs `testsuite/python/tests/` without rebuilding Slurm.
+
+Each phase stores its own log, exit status, JUnit report, daemon logs, config,
+and timestamps. The second job merges both JUnit reports into the stable
+`junit.xml` consumed by baseline/candidate comparison. A final short cleanup
+job runs after either outcome and deletes the VM unless
+`keep_vm_on_failure=true`. The Expect phase also uploads a standalone
+diagnostic artifact before the second job starts.
+
+The user-facing workflows intentionally separate two operations:
 
 1. [`Slurm ATF vanilla baseline`](../.github/workflows/slurm-atf-baseline.yml)
    builds the release while `NB-0001` contains only documentation, tests, and

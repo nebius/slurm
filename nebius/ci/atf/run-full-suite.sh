@@ -40,6 +40,9 @@ sudo test -f /etc/slurm-atf-disposable
 test -s /etc/slurm-atf-image.json
 test -f "${source_dir}/META"
 test -x "${source_dir}/configure"
+test -d "${tests_dir}/testsuite/expect"
+test -d "${tests_dir}/testsuite/src"
+test -x "${tests_dir}/testsuite/run-tests"
 test -x "${tests_dir}/testsuite/python/run-tests-python"
 test -x "${pmix_prefix}/bin/pmix_info"
 test -x "${openmpi_prefix}/bin/mpirun"

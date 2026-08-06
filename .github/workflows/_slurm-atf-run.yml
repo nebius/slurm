@@ -116,11 +116,18 @@ jobs:
         run: |
           set -euo pipefail
           configure_script=external-infra/slurm-atf/infra/configure-atf.sh
+          generic_config=external-infra/slurm-atf/infra/config/slurm-generic.conf
           expected='sudo "${root}/venv/bin/pip" install -r "${script_dir}/requirements.lock"'
           grep -Fxq "${expected}" "${configure_script}"
           sed -i \
             's|sudo "${root}/venv/bin/pip" install -r "${script_dir}/requirements.lock"|sudo "${root}/venv/bin/pip" check|' \
             "${configure_script}"
+
+          generic_node='NodeName=node0 NodeAddr=127.0.0.1 Port=7001 CPUs=4 RealMemory=32768 State=UNKNOWN'
+          grep -Fxq "${generic_node}" "${generic_config}"
+          sed -i \
+            's|Port=7001 CPUs=4 RealMemory=32768|Port=7001 CPUs=1 RealMemory=32768|' \
+            "${generic_config}"
 
       - name: Install yq
         uses: frenck/action-setup-yq@c4b5be8b4a215c536a41d436757d9feb92836d4f # v1.0.2
@@ -315,6 +322,9 @@ jobs:
           infra_dir="${root}/external-infra/slurm-atf/infra"
           build_dir="${root}/build"
           output_dir="${root}/result"
+          # The ATF user needs directory traversal, but not listing access, to
+          # execute the copied harness and tests below the CI user's home.
+          chmod o+x "${HOME}"
           mkdir -p "${output_dir}"
           set +e
           "${tests_dir}/nebius/ci/atf/run-full-suite.sh" \

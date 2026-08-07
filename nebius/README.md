@@ -283,8 +283,8 @@ Configure the following values in the GitHub `e2e` environment:
 | Kind | Name | Purpose |
 | --- | --- | --- |
 | Variable | `NEBIUS_CLI_CONFIG` | Nebius CLI `config.yaml` without the private key |
-| Variable | `SLURM_ATF_PROFILE` | Project, subnet, VM shape, and SSH user |
-| Variable | `SLURM_ATF_H200_PROFILE` | Optional dedicated 8xH200 VM project, subnet, shape, and SSH user |
+| Variable | `SLURM_ATF_PROFILE` | Project, subnet, shape, and SSH user for four CPU shards |
+| Variable | `SLURM_ATF_H200_PROFILE` | Project, subnet, shape, and SSH user for the 8xH200 shard |
 | Secret | `NEBIUS_PRIVATE_KEY` | Private key for the selected Nebius CLI profile |
 | Secret | `SLURM_ATF_SSH_PRIVATE_KEY` | Unencrypted OpenSSH key used for the disposable VM |
 | Secret | `SLURM_ATF_DEBUG_SSH_PUBLIC_KEYS` | Optional newline-separated public keys for human debugging |
@@ -357,7 +357,7 @@ compute image does not belong in this variable: the baseline workflow receives
 an immutable image ID explicitly, and candidate runs inherit it from the
 published baseline metadata.
 
-To run the full baseline on an 8xH200 host, store this dedicated VM shape in
+For the dedicated GPU shard, store this 8xH200 VM shape in
 `SLURM_ATF_H200_PROFILE`:
 
 ```yaml
@@ -378,14 +378,13 @@ CUDA compiler, NVML headers, and all eight GPUs before starting the long test
 suite. The CPU-only image `computeimage-e00sphs75y9ej9nw9j` is not compatible
 with this profile.
 
-`atf_profile=h200` selects and validates the physical VM only. The full
-Expect/Python suite always configures a hardware-neutral `generic` Slurm node
-with four synthetic CPUs and no physical GRES. ATF clones and reshapes that
-node for individual tests; cloning the physical 128-CPU, eight-GPU node would
-make synthetic `slurmd` instances invalid because NVML devices exist only for
-`node0`. Real GPU allocation checks belong in a separate GPU smoke/shard; the
-H200 configuration files under `nebius/ci/atf/config/` are retained for that
-future job and are not used by the full suite.
+`atf_profile=h200` selects and validates the physical VM only. All shards
+configure a hardware-neutral `generic` Slurm node with four synthetic CPUs.
+ATF clones and reshapes that node for individual tests; cloning the physical
+128-CPU, eight-GPU node would make synthetic `slurmd` instances invalid because
+NVML devices exist only for `node0`. The GPU shard nevertheless exposes the
+real H200 devices, CUDA compiler, and NVML libraries to tests that invoke them
+directly, including `expect/test_40_8.py`.
 
 Build and version that image using the repository-owned
 [`nebius/ci/images/slurm-atf-h200`](ci/images/slurm-atf-h200/README.md)
@@ -393,8 +392,8 @@ Packer definition. Its project and subnet are runtime variables and are not
 stored in Git.
 
 Keeping H200 in a separate variable leaves `SLURM_ATF_PROFILE` available to
-the CPU smoke workflow. Full runs automatically select the H200 VM definition
-from `SLURM_ATF_H200_PROFILE` when `atf_profile=h200`, while keeping the
+the CPU smoke workflow and the four CPU test shards. Full runs automatically
+select `SLURM_ATF_H200_PROFILE` only for the GPU shard while keeping the
 in-guest ATF cluster generic; no variable has to be swapped between runs.
 
 The effective security group must allow TCP/22 from GitHub-hosted runners.
@@ -469,23 +468,39 @@ check.
 
 ### Full ATF baseline and patch comparison
 
-The full workflow runs the complete ATF suite on the same prepared Nebius
-image used by every compared run. The expensive work is split across two
-sequential GitHub-hosted jobs so neither job approaches GitHub's six-hour
-execution limit:
+The full workflow runs the complete ATF suite on five disposable VMs in
+parallel: four generic CPU shards and one 8xH200 GPU shard. Test files are
+assigned by a stable SHA-256 hash of their repository path. Tests that require
+real GPU tooling are explicitly pinned to the GPU shard; that shard also runs
+its normal hash-assigned share so the expensive host is not idle.
 
-1. The first job creates the VM, builds Slurm and its SUT-linked MPICH, then
-   runs only the wrappers under `testsuite/python/expect/`.
-2. The second job reconnects to the same VM using the SSH host key pinned by
-   the first job, resets the disposable ATF configuration and accounting
-   database, then runs `testsuite/python/tests/` without rebuilding Slurm.
+Each shard has two sequential GitHub jobs. The first creates its VM, builds
+Slurm and the SUT-linked MPICH, and runs its assigned wrappers under
+`testsuite/python/expect/`. The second reconnects to the same VM using the SSH
+host key pinned by the first job, resets the disposable ATF configuration and
+accounting database, and runs its assigned files under
+`testsuite/python/tests/` without rebuilding Slurm. All five shard workflows
+execute concurrently.
 
-Each phase stores its own log, exit status, JUnit report, daemon logs, config,
-and timestamps. The second job merges both JUnit reports into the stable
-`junit.xml` consumed by baseline/candidate comparison. A final short cleanup
-job runs after either outcome and deletes the VM unless
-`keep_vm_on_failure=true`. The Expect phase also uploads a standalone
-diagnostic artifact before the second job starts.
+Each phase stores its selection manifest, log, exit status, JUnit report,
+daemon logs, configuration, and timestamps. After all shards finish, an
+aggregation job requires exactly the fixed `cpu-0` through `cpu-3` plus `gpu`
+topology, identical source/test/infrastructure revisions, disjoint selection,
+and complete collected testcase coverage. It then publishes one stable
+`junit.xml` consumed by baseline/candidate comparison while retaining every
+per-shard artifact below `shards/`. Cleanup runs independently for every VM
+unless `keep_vm_on_failure=true`.
+
+This first version balances by file path rather than historical duration.
+That makes assignments reproducible across baseline and candidate runs and
+keeps new tests deterministic. If timing data later shows a persistent skew,
+the assignment algorithm can be versioned and replaced when creating a new
+baseline; it must not change underneath an existing baseline pointer.
+
+The Nebius projects referenced by the two environment profiles must have
+enough quota to allocate four CPU VMs and one 8xH200 VM concurrently. Be
+especially careful with `keep_vm_on_failure=true`: a failed run can retain all
+five machines, and each must then be deleted manually.
 
 The user-facing workflows intentionally separate two operations:
 
@@ -523,8 +538,8 @@ gh workflow run slurm-atf-baseline.yml \
   --ref patch/NB-0001-sync-docs-and-tests \
   -f release_line=26.05 \
   -f upstream_branch=slurm-26.05 \
-  -f image_id=<prepared-h200-computeimage-id> \
-  -f atf_profile=h200 \
+  -f cpu_image_id=computeimage-e00sphs75y9ej9nw9j \
+  -f gpu_image_id=computeimage-e00gq5v1eyswsdk55g \
   -f nebius_cli_profile=default \
   -f keep_vm_on_failure=false
 ```
@@ -559,7 +574,8 @@ Pull requests targeting `nebius/**` run the patch comparison automatically.
 The workflow reads the pointer specifically from the target release branch
 (a patch cannot replace its own comparison input), verifies the
 baseline archive and provenance, and uses the baseline's exact test commit,
-ATF infrastructure commit, image, VM shape, and profile.
+ATF infrastructure commit, two images, CPU/GPU VM shapes, and five-shard
+assignment manifest.
 
 A manual rerun normally needs only the release ref; it reads the same pointer:
 
@@ -575,9 +591,11 @@ The optional `baseline_tag` input overrides the pointer for diagnosis. Do not
 use an override as the normal merge result: the committed pointer is the
 reviewed comparison contract for the release.
 
-Candidate runs also inherit the image ID, ATF profile, and exact VM shape from
-that immutable baseline. A changed GitHub environment profile therefore fails
-before allocating a VM instead of producing an invalid multi-hour comparison.
+Candidate runs also inherit both image IDs and the exact CPU/GPU VM shapes
+from that immutable baseline. The comparison requires the same sharding
+algorithm and inventories. A changed GitHub environment profile therefore
+fails during VM validation instead of producing an invalid multi-hour
+comparison.
 
 After a comparison, two 30-day Actions artifacts are available: the complete
 candidate evidence and a smaller A/B report in Markdown and JSON. The vanilla

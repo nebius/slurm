@@ -284,7 +284,7 @@ Configure the following values in the GitHub `e2e` environment:
 | --- | --- | --- |
 | Variable | `NEBIUS_CLI_CONFIG` | Nebius CLI `config.yaml` without the private key |
 | Variable | `SLURM_ATF_PROFILE` | Project, subnet, VM shape, and SSH user |
-| Variable | `SLURM_ATF_H200_PROFILE` | Optional dedicated 8xH200 project, subnet, shape, and SSH user |
+| Variable | `SLURM_ATF_H200_PROFILE` | Optional dedicated 8xH200 VM project, subnet, shape, and SSH user |
 | Secret | `NEBIUS_PRIVATE_KEY` | Private key for the selected Nebius CLI profile |
 | Secret | `SLURM_ATF_SSH_PRIVATE_KEY` | Unencrypted OpenSSH key used for the disposable VM |
 | Secret | `SLURM_ATF_DEBUG_SSH_PUBLIC_KEYS` | Optional newline-separated public keys for human debugging |
@@ -357,7 +357,7 @@ compute image does not belong in this variable: the baseline workflow receives
 an immutable image ID explicitly, and candidate runs inherit it from the
 published baseline metadata.
 
-For a full 8xH200 baseline, store this dedicated shape in
+To run the full baseline on an 8xH200 host, store this dedicated VM shape in
 `SLURM_ATF_H200_PROFILE`:
 
 ```yaml
@@ -371,12 +371,21 @@ slurm_atf:
   ssh_user: slurm-atf-ci
 ```
 
-The H200 workflow profile requires an ATF image whose metadata declares eight
+The H200 VM profile requires an ATF image whose metadata declares eight
 H200 GPUs and whose Nebius image metadata recommends `gpu-h200-sxm`. The
 workflow checks the image state, architecture, minimum disk size, platform,
 CUDA compiler, NVML headers, and all eight GPUs before starting the long test
 suite. The CPU-only image `computeimage-e00sphs75y9ej9nw9j` is not compatible
 with this profile.
+
+`atf_profile=h200` selects and validates the physical VM only. The full
+Expect/Python suite always configures a hardware-neutral `generic` Slurm node
+with four synthetic CPUs and no physical GRES. ATF clones and reshapes that
+node for individual tests; cloning the physical 128-CPU, eight-GPU node would
+make synthetic `slurmd` instances invalid because NVML devices exist only for
+`node0`. Real GPU allocation checks belong in a separate GPU smoke/shard; the
+H200 configuration files under `nebius/ci/atf/config/` are retained for that
+future job and are not used by the full suite.
 
 Build and version that image using the repository-owned
 [`nebius/ci/images/slurm-atf-h200`](ci/images/slurm-atf-h200/README.md)
@@ -384,9 +393,9 @@ Packer definition. Its project and subnet are runtime variables and are not
 stored in Git.
 
 Keeping H200 in a separate variable leaves `SLURM_ATF_PROFILE` available to
-the CPU smoke workflow. Full runs automatically select
-`SLURM_ATF_H200_PROFILE` when `atf_profile=h200`; no variable has to be swapped
-between runs.
+the CPU smoke workflow. Full runs automatically select the H200 VM definition
+from `SLURM_ATF_H200_PROFILE` when `atf_profile=h200`, while keeping the
+in-guest ATF cluster generic; no variable has to be swapped between runs.
 
 The effective security group must allow TCP/22 from GitHub-hosted runners.
 The Nebius identity must be allowed to create, inspect, and delete Compute

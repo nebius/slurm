@@ -77,6 +77,33 @@ class MergeJunitTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "duplicate testcase"):
                 merge_junit.merge(expect, python, root / "junit.xml")
 
+    def test_coalesces_duplicate_call_and_teardown_results_within_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            expect = self.report(
+                root,
+                "expect.xml",
+                [("expect/test_a.py::test_a", "passed", "1")],
+            )
+            python = self.report(
+                root,
+                "python.xml",
+                [
+                    ("tests/test_a.py::test_a", "failed", "2.5"),
+                    ("tests/test_a.py::test_a", "error", "0.5"),
+                ],
+            )
+            output = root / "junit.xml"
+            merge_junit.merge(expect, python, output)
+
+            merged = ET.parse(output).getroot()
+            self.assertEqual(merged.get("tests"), "2")
+            self.assertEqual(merged.get("failures"), "0")
+            self.assertEqual(merged.get("errors"), "1")
+            self.assertEqual(merged.get("time"), "4.000000")
+            results = compare_junit.load(output)
+            self.assertEqual(results["tests/test_a.py::test_a"].status, "error")
+
     def test_rejects_empty_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

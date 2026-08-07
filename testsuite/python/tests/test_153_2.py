@@ -220,7 +220,7 @@ def test_alloc_metrics_partitions():
     )
 
     job_id = atf.submit_job_sbatch(
-        "--gres=gpu:3 -N1 -n1 -c 2 -p a --wrap='srun sleep 300'"
+        "--exclusive --gres=gpu:4 -N1 -n1 -c 2 -p a --wrap='srun sleep 300'"
     )
     atf.wait_for_job_state(job_id, "RUNNING")
 
@@ -250,8 +250,8 @@ def test_alloc_metrics_partitions():
         "slurm_partition_jobs_gpus_alloc",
         "partition",
         "a",
-        lambda v: int(v) == 3,
-        "Expected slurm_partition_jobs_gpus_alloc == 3",
+        lambda v: int(v) == 4,
+        "Expected slurm_partition_jobs_gpus_alloc == 4",
     )
     assert_labeled_metric(
         parts_output,

@@ -18,19 +18,16 @@ on:
         required: true
         default: default
         type: string
-      image_id:
-        description: Immutable Nebius image compatible with the selected VM platform
+      cpu_image_id:
+        description: Immutable image for the four generic CPU shards
         required: true
         default: computeimage-e00sphs75y9ej9nw9j
         type: string
-      atf_profile:
-        description: VM hardware profile; the full ATF cluster stays generic
+      gpu_image_id:
+        description: Immutable image for the H200 GPU shard
         required: true
-        default: generic
-        type: choice
-        options:
-          - generic
-          - h200
+        default: computeimage-e00gq5v1eyswsdk55g
+        type: string
       keep_vm_on_failure:
         description: Keep the VM after an infrastructure failure for SSH debugging
         required: true
@@ -106,13 +103,13 @@ jobs:
   run:
     name: Run the full vanilla suite
     needs: prepare
-    uses: ./.github/workflows/_slurm-atf-run.yml
+    uses: ./.github/workflows/_slurm-atf-sharded-run.yml
     with:
       run_kind: baseline
       release_line: ${{ inputs.release_line }}
       tests_ref: ${{ needs.prepare.outputs.source_commit }}
-      image_id: ${{ inputs.image_id }}
-      atf_profile: ${{ inputs.atf_profile }}
+      cpu_image_id: ${{ inputs.cpu_image_id }}
+      gpu_image_id: ${{ inputs.gpu_image_id }}
       nebius_cli_profile: ${{ inputs.nebius_cli_profile }}
       keep_vm_on_failure: ${{ inputs.keep_vm_on_failure }}
     secrets: inherit
@@ -152,6 +149,17 @@ jobs:
           test "$(jq -er '.release_line' baseline-evidence/run-metadata.json)" = "${RELEASE_LINE}"
           test "$(jq -er '.source.commit' baseline-evidence/run-metadata.json)" = "${SOURCE_COMMIT}"
           test "$(jq -er '.tests.commit' baseline-evidence/run-metadata.json)" = "${SOURCE_COMMIT}"
+          test "$(jq -er '.vm.topology' baseline-evidence/run-metadata.json)" = \
+            4cpu+1gpu
+          test "$(jq -er '.vm.cpu.count' baseline-evidence/run-metadata.json)" = 4
+          test "$(jq -er '.vm.cpu.atf_profile' baseline-evidence/run-metadata.json)" = \
+            generic
+          test "$(jq -er '.vm.gpu.count' baseline-evidence/run-metadata.json)" = 1
+          test "$(jq -er '.vm.gpu.atf_profile' baseline-evidence/run-metadata.json)" = \
+            h200
+          test "$(jq -er '.sharding.algorithm' baseline-evidence/run-metadata.json)" = \
+            sha256-path-v1
+          test "$(jq -er '.sharding.shards | length' baseline-evidence/run-metadata.json)" = 5
           test "$(jq -er '.result.pytest_exit_status' baseline-evidence/run-metadata.json)" = \
             "$(<baseline-evidence/pytest-exit-status)"
           test "$(jq -er '.result.junit_sha256' baseline-evidence/run-metadata.json)" = \
@@ -166,7 +174,8 @@ jobs:
               source,
               tests,
               infrastructure,
-              vm
+              vm,
+              sharding
             }' baseline-evidence/run-metadata.json >baseline-identity.json
           baseline_key="$(sha256sum baseline-identity.json | awk '{print $1}')"
           [[ "${baseline_key}" =~ ^[0-9a-f]{64}$ ]]

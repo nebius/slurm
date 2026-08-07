@@ -1,0 +1,182 @@
+name: Internal sharded Slurm ATF run
+
+on:
+  workflow_call:
+    inputs:
+      run_kind:
+        description: baseline or candidate
+        required: true
+        type: string
+      release_line:
+        description: Slurm release line, for example 26.05
+        required: true
+        type: string
+      tests_ref:
+        description: Exact commit containing the common tests and shard tooling
+        required: true
+        type: string
+      cpu_image_id:
+        description: Immutable image for the four generic CPU shards
+        required: false
+        default: computeimage-e00sphs75y9ej9nw9j
+        type: string
+      gpu_image_id:
+        description: Immutable image for the H200 GPU shard
+        required: false
+        default: computeimage-e00gq5v1eyswsdk55g
+        type: string
+      expected_cpu_vm_shape:
+        required: false
+        default: ""
+        type: string
+      expected_gpu_vm_shape:
+        required: false
+        default: ""
+        type: string
+      nebius_cli_profile:
+        required: false
+        default: default
+        type: string
+      keep_vm_on_failure:
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      artifact_name:
+        description: Complete merged evidence from all five shards
+        value: ${{ jobs.aggregate.outputs.artifact_name }}
+      source_commit:
+        description: Exact Slurm source commit tested by every shard
+        value: ${{ jobs.aggregate.outputs.source_commit }}
+      tests_commit:
+        description: Exact common-test commit used by every shard
+        value: ${{ jobs.aggregate.outputs.tests_commit }}
+      infra_commit:
+        description: Exact ATF infrastructure commit used by every shard
+        value: ${{ jobs.aggregate.outputs.infra_commit }}
+      cpu_vm_shape:
+        value: ${{ jobs.aggregate.outputs.cpu_vm_shape }}
+      gpu_vm_shape:
+        value: ${{ jobs.aggregate.outputs.gpu_vm_shape }}
+
+permissions:
+  contents: read
+
+jobs:
+  shards:
+    name: ATF shard / ${{ matrix.shard_id }}
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - shard_id: cpu-0
+            shard_index: 0
+            atf_profile: generic
+          - shard_id: cpu-1
+            shard_index: 1
+            atf_profile: generic
+          - shard_id: cpu-2
+            shard_index: 2
+            atf_profile: generic
+          - shard_id: cpu-3
+            shard_index: 3
+            atf_profile: generic
+          - shard_id: gpu
+            shard_index: 4
+            atf_profile: h200
+    uses: ./.github/workflows/_slurm-atf-run.yml
+    with:
+      run_kind: ${{ inputs.run_kind }}
+      release_line: ${{ inputs.release_line }}
+      tests_ref: ${{ inputs.tests_ref }}
+      image_id: ${{ matrix.atf_profile == 'h200' && inputs.gpu_image_id || inputs.cpu_image_id }}
+      atf_profile: ${{ matrix.atf_profile }}
+      expected_vm_shape: ${{ matrix.atf_profile == 'h200' && inputs.expected_gpu_vm_shape || inputs.expected_cpu_vm_shape }}
+      shard_id: ${{ matrix.shard_id }}
+      shard_index: ${{ matrix.shard_index }}
+      shard_total: 5
+      nebius_cli_profile: ${{ inputs.nebius_cli_profile }}
+      keep_vm_on_failure: ${{ inputs.keep_vm_on_failure }}
+    secrets: inherit
+
+  aggregate:
+    name: Validate and merge all ATF shards
+    needs: shards
+    if: always()
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+      source_commit: ${{ steps.metadata.outputs.source_commit }}
+      tests_commit: ${{ steps.metadata.outputs.tests_commit }}
+      infra_commit: ${{ steps.metadata.outputs.infra_commit }}
+      cpu_vm_shape: ${{ steps.metadata.outputs.cpu_vm_shape }}
+      gpu_vm_shape: ${{ steps.metadata.outputs.gpu_vm_shape }}
+    steps:
+      - name: Checkout the pinned aggregation tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tests_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download every shard artifact
+        uses: actions/download-artifact@v8
+        with:
+          pattern: slurm-atf-shard-${{ inputs.run_kind }}-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: shard-results
+
+      - id: aggregation
+        name: Require complete disjoint coverage and merge JUnit
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p atf-result
+          python3 nebius/ci/atf/aggregate_shards.py \
+            shard-results \
+            atf-result \
+            --kind "${{ inputs.run_kind }}" \
+            --release-line "${{ inputs.release_line }}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - id: metadata
+        if: steps.aggregation.outcome == 'success'
+        name: Export aggregate provenance
+        run: |
+          set -euo pipefail
+          metadata=atf-result/run-metadata.json
+          test -s "${metadata}"
+          artifact_name="slurm-atf-${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "artifact_name=${artifact_name}"
+            echo "source_commit=$(jq -er '.source.commit' "${metadata}")"
+            echo "tests_commit=$(jq -er '.tests.commit' "${metadata}")"
+            echo "infra_commit=$(jq -er '.infrastructure.commit' "${metadata}")"
+            echo "cpu_vm_shape=$(jq -er '.vm.cpu.shape' "${metadata}")"
+            echo "gpu_vm_shape=$(jq -er '.vm.gpu.shape' "${metadata}")"
+          } >>"${GITHUB_OUTPUT}"
+          {
+            echo "### Sharded ATF evidence"
+            echo
+            echo "- Topology: \`4 CPU + 1 H200 GPU\`"
+            echo "- Aggregate status: \`$(<atf-result/pytest-exit-status)\`"
+            echo "- Artifact: \`${artifact_name}\`"
+            echo "- JUnit SHA256: \`$(jq -er '.result.junit_sha256' "${metadata}")\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - if: always()
+        name: Upload merged ATF evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: slurm-atf-${{ inputs.run_kind }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: atf-result/
+          if-no-files-found: error
+          retention-days: 30
+
+      - if: always() && (needs.shards.result != 'success' || steps.aggregation.outcome != 'success')
+        name: Fail after preserving partial shard evidence
+        run: |
+          echo "One or more ATF shards failed or produced incomplete evidence." >&2
+          exit 1

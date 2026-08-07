@@ -382,9 +382,11 @@ with this profile.
 configure a hardware-neutral `generic` Slurm node with four synthetic CPUs.
 ATF clones and reshapes that node for individual tests; cloning the physical
 128-CPU, eight-GPU node would make synthetic `slurmd` instances invalid because
-NVML devices exist only for `node0`. The GPU shard nevertheless exposes the
-real H200 devices, CUDA compiler, and NVML libraries to tests that invoke them
-directly, including `expect/test_40_8.py`.
+NVML devices exist only for `node0`. The base `gres.conf` therefore remains
+empty even on the GPU shard. The pinned `expect/test_39_9.py` module temporarily
+sets `NodeName=node0 AutoDetect=nvml` through ATF, and module teardown restores
+the empty base before another test starts. The shard also exposes the real H200
+devices, CUDA compiler, and NVML libraries to tests that invoke them directly.
 
 Build and version that image using the repository-owned
 [`nebius/ci/images/slurm-atf-h200`](ci/images/slurm-atf-h200/README.md)
@@ -469,10 +471,14 @@ check.
 ### Full ATF baseline and patch comparison
 
 The full workflow runs the complete ATF suite on five disposable VMs in
-parallel: four generic CPU shards and one 8xH200 GPU shard. Test files are
-assigned by a stable SHA-256 hash of their repository path. Tests that require
-real GPU tooling are explicitly pinned to the GPU shard; that shard also runs
-its normal hash-assigned share so the expensive host is not idle.
+parallel: four generic CPU shards and one 8xH200 GPU shard. Test paths are put
+in a stable SHA-256 order and then assigned to the currently smallest shard.
+This keeps per-phase file counts within one file of each other while scattering
+similarly named tests. Tests that require real GPU tooling are assigned to the
+GPU shard first; that shard then receives enough ordinary files to reach the
+same target count as the CPU shards. Tests with known H200 topology limits,
+such as the legacy 64-bit affinity-mask `expect/test_1_91.py`, remain on a CPU
+shard.
 
 Each shard has two sequential GitHub jobs. The first creates its VM, builds
 Slurm and the SUT-linked MPICH, and runs its assigned wrappers under
@@ -491,8 +497,8 @@ and complete collected testcase coverage. It then publishes one stable
 per-shard artifact below `shards/`. Cleanup runs independently for every VM
 unless `keep_vm_on_failure=true`.
 
-This first version balances by file path rather than historical duration.
-That makes assignments reproducible across baseline and candidate runs and
+This version balances exact file counts rather than historical duration. The
+hash-ordered assignment is reproducible across baseline and candidate runs and
 keeps new tests deterministic. If timing data later shows a persistent skew,
 the assignment algorithm can be versioned and replaced when creating a new
 baseline; it must not change underneath an existing baseline pointer.

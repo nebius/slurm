@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from shard_tests import GPU_REQUIRED, build_manifest
+from shard_tests import GPU_INCOMPATIBLE, GPU_REQUIRED, build_manifest
 
 
 def make_tree(root: Path) -> Path:
@@ -18,6 +18,10 @@ def make_tree(root: Path) -> Path:
         target = test_root / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("def test_gpu(): pass\n", encoding="utf-8")
+    for path in GPU_INCOMPATIBLE:
+        target = test_root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("def test_cpu(): pass\n", encoding="utf-8")
     return test_root
 
 
@@ -51,6 +55,10 @@ class ShardTests(unittest.TestCase):
                 ]
                 self.assertEqual(sorted(selected), sorted(assignments))
                 self.assertEqual(len(selected), len(set(selected)))
+                counts = [
+                    len(manifest["selected_files"]) for manifest in manifests
+                ]
+                self.assertLessEqual(max(counts) - min(counts), 1)
 
     def test_gpu_integrations_are_forced_to_h200(self) -> None:
         with tempfile.TemporaryDirectory() as root:
@@ -59,6 +67,29 @@ class ShardTests(unittest.TestCase):
             cpu = build_manifest(test_root, "expect", "cpu-0", 0, 5, "generic")
             self.assertLessEqual(GPU_REQUIRED, set(gpu["selected_files"]))
             self.assertTrue(GPU_REQUIRED.isdisjoint(cpu["selected_files"]))
+
+    def test_h200_incompatible_integrations_stay_on_cpu(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            test_root = make_tree(Path(root))
+            manifests = [
+                build_manifest(
+                    test_root,
+                    "expect",
+                    "gpu" if index == 4 else f"cpu-{index}",
+                    index,
+                    5,
+                    "h200" if index == 4 else "generic",
+                )
+                for index in range(5)
+            ]
+            gpu = manifests[-1]
+            cpu_files = {
+                path
+                for manifest in manifests[:-1]
+                for path in manifest["selected_files"]
+            }
+            self.assertTrue(GPU_INCOMPATIBLE.isdisjoint(gpu["selected_files"]))
+            self.assertLessEqual(GPU_INCOMPATIBLE, cpu_files)
 
     def test_rejects_non_h200_last_shard(self) -> None:
         with tempfile.TemporaryDirectory() as root:

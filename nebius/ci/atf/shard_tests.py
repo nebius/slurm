@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a stable, auditable ATF file-level shard selection."""
+"""Create a stable, auditable, file-count-balanced ATF selection."""
 
 from __future__ import annotations
 
@@ -14,6 +14,14 @@ GPU_REQUIRED = {
     "expect/test_40_8.py",
 }
 
+GPU_INCOMPATIBLE = {
+    # The legacy helper stores affinity masks in uint64_t and skips hosts with
+    # more than 64 hardware threads. The H200 shape exposes 128 threads.
+    "expect/test_1_91.py",
+}
+
+ALGORITHM = "balanced-hash-v1"
+
 
 def discover(test_root: Path, phase: str) -> list[str]:
     directory = test_root / ("expect" if phase == "expect" else "tests")
@@ -24,11 +32,39 @@ def discover(test_root: Path, phase: str) -> list[str]:
     )
 
 
-def assigned_index(path: str, shard_total: int, gpu_index: int) -> int:
-    if path in GPU_REQUIRED:
-        return gpu_index
-    digest = hashlib.sha256(path.encode()).digest()
-    return int.from_bytes(digest[:8], "big") % shard_total
+def build_assignments(
+    files: list[str], shard_total: int, gpu_index: int
+) -> dict[str, int]:
+    """Spread files evenly while keeping hardware GPU tests on H200.
+
+    Hashing the paths first prevents related, similarly named tests from being
+    clustered together. Greedily assigning that stable order to the currently
+    smallest shard guarantees that file counts differ by at most one unless a
+    capability-pinned set is itself too large to balance.
+    """
+
+    assignments: dict[str, int] = {}
+    counts = [0] * shard_total
+
+    for path in sorted(GPU_REQUIRED.intersection(files)):
+        assignments[path] = gpu_index
+        counts[gpu_index] += 1
+
+    generic_files = sorted(
+        (path for path in files if path not in assignments),
+        key=lambda path: (hashlib.sha256(path.encode()).digest(), path),
+    )
+    for path in generic_files:
+        eligible = (
+            range(gpu_index)
+            if path in GPU_INCOMPATIBLE
+            else range(shard_total)
+        )
+        owner = min(eligible, key=lambda index: (counts[index], index))
+        assignments[path] = owner
+        counts[owner] += 1
+
+    return assignments
 
 
 def build_manifest(
@@ -53,9 +89,7 @@ def build_manifest(
     files = discover(test_root, phase)
     if not files:
         raise ValueError(f"no {phase} tests found below {test_root}")
-    assignments = {
-        path: assigned_index(path, shard_total, gpu_index) for path in files
-    }
+    assignments = build_assignments(files, shard_total, gpu_index)
     selected = [path for path in files if assignments[path] == shard_index]
     if not selected:
         raise ValueError(f"shard {shard_id} selected no {phase} tests")
@@ -63,7 +97,7 @@ def build_manifest(
     inventory = json.dumps(files, separators=(",", ":"), ensure_ascii=True)
     return {
         "schema": 1,
-        "algorithm": "sha256-path-v1",
+        "algorithm": ALGORITHM,
         "phase": phase,
         "shard": {
             "id": shard_id,
@@ -75,6 +109,7 @@ def build_manifest(
         "assignments": assignments,
         "selected_files": selected,
         "gpu_required_files": sorted(GPU_REQUIRED.intersection(files)),
+        "gpu_incompatible_files": sorted(GPU_INCOMPATIBLE.intersection(files)),
     }
 
 

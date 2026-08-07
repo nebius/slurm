@@ -142,6 +142,27 @@ cleanup_release_configure_compat() {
 	legacy_topology_dir_created=false
 }
 
+prepare_release_build_compat() {
+	local testsuite_makefile="${build_dir}/testsuite/Makefile"
+	local synced_subdirs='SUBDIRS = expect slurm_unit'
+
+	# Master has an Automake-only testsuite/expect directory, but the 26.05
+	# release configure script does not emit its Makefile. The wrappers are
+	# executed directly from tests_dir later, so do not descend into this empty
+	# build-only directory when compiling and installing the vanilla release.
+	if grep -Fq 'testsuite/expect/Makefile' "${source_dir}/configure"; then
+		return
+	fi
+	test -f "${testsuite_makefile}"
+	if ! grep -Fxq "${synced_subdirs}" "${testsuite_makefile}"; then
+		echo "Release configure does not support testsuite/expect, but the generated testsuite SUBDIRS are unexpected" >&2
+		return 1
+	fi
+	sed -i \
+		's/^SUBDIRS = expect slurm_unit$/SUBDIRS = slurm_unit/' \
+		"${testsuite_makefile}"
+}
+
 prepare_build() {
 	local configure_status=0
 
@@ -191,6 +212,7 @@ prepare_build() {
 	if ((configure_status != 0)); then
 		return "${configure_status}"
 	fi
+	prepare_release_build_compat
 
 	make -j"${jobs}"
 	sudo make install

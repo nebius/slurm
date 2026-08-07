@@ -42,6 +42,10 @@ def test_overcommit_gres_per_task():
     )
 
 
+@pytest.mark.skipif(
+    atf.get_version("sbin/slurmctld") < (26, 11),
+    reason="Ticket 25536: mixed tres-per-task overcommit placement fix",
+)
 def test_overcommit_mixed_tres_per_task():
     """Verify mixed cpu+gres tres-per-task keeps overcommit placement disabled.
 

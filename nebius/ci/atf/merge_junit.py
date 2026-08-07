@@ -96,7 +96,15 @@ def _suite_totals(suite: ET.Element) -> dict[str, float | int]:
     }
 
 
-def merge(expect_path: Path, python_path: Path, output_path: Path) -> None:
+def merge_labeled_reports(
+    reports: list[tuple[str, Path]], output_path: Path
+) -> None:
+    if not reports:
+        raise ValueError("at least one JUnit report is required")
+    labels = [label for label, _ in reports]
+    if len(labels) != len(set(labels)):
+        raise ValueError("JUnit report labels must be unique")
+
     output = ET.Element("testsuites", {"name": "slurm-atf"})
     seen: set[tuple[str, str, str]] = set()
     totals: dict[str, float | int] = {
@@ -107,7 +115,7 @@ def merge(expect_path: Path, python_path: Path, output_path: Path) -> None:
         "time": 0.0,
     }
 
-    for phase, path in (("expect", expect_path), ("python", python_path)):
+    for phase, path in reports:
         phase_suites: list[ET.Element] = []
         phase_seen: dict[tuple[str, str, str], ET.Element] = {}
         for source_suite in _suites(path):
@@ -152,6 +160,12 @@ def merge(expect_path: Path, python_path: Path, output_path: Path) -> None:
         temporary_path.replace(output_path)
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def merge(expect_path: Path, python_path: Path, output_path: Path) -> None:
+    merge_labeled_reports(
+        [("expect", expect_path), ("python", python_path)], output_path
+    )
 
 
 def main() -> int:

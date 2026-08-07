@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (($# != 11)); then
-	echo "usage: $0 PHASE SOURCE_DIR TESTS_DIR INFRA_DIR BUILD_DIR OUTPUT_DIR RUN_ID RELEASE_LINE SOURCE_COMMIT TESTS_COMMIT VM_PROFILE" >&2
+if (($# != 14)); then
+	echo "usage: $0 PHASE SOURCE_DIR TESTS_DIR INFRA_DIR BUILD_DIR OUTPUT_DIR RUN_ID RELEASE_LINE SOURCE_COMMIT TESTS_COMMIT VM_PROFILE SHARD_ID SHARD_INDEX SHARD_TOTAL" >&2
 	exit 2
 fi
 
@@ -18,6 +18,9 @@ release_line="$7"
 source_commit="$8"
 tests_commit="$9"
 vm_profile="${10}"
+shard_id="${11}"
+shard_index="${12}"
+shard_total="${13}"
 atf_profile=generic
 
 atf_root=/opt/slurm-atf
@@ -40,8 +43,16 @@ phase_status=0
 [[ "${release_line}" =~ ^[0-9]+\.[0-9]+$ ]]
 [[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]
 [[ "${tests_commit}" =~ ^[0-9a-f]{40}$ ]]
-[[ "${vm_profile}" == generic || "${vm_profile}" == b200 || \
-	"${vm_profile}" == h200 ]]
+[[ "${vm_profile}" == generic || "${vm_profile}" == h200 ]]
+[[ "${shard_id}" =~ ^[a-zA-Z0-9._-]+$ ]]
+[[ "${shard_index}" =~ ^[0-9]+$ ]]
+[[ "${shard_total}" =~ ^[1-9][0-9]*$ ]]
+((shard_index < shard_total))
+if ((shard_index == shard_total - 1)); then
+	[[ "${vm_profile}" == h200 ]]
+else
+	[[ "${vm_profile}" == generic ]]
+fi
 [[ "${jobs}" =~ ^[1-9][0-9]*$ ]]
 
 sudo test -f /etc/slurm-atf-disposable
@@ -54,6 +65,7 @@ test -d "${tests_dir}/testsuite/python/tests"
 test -x "${tests_dir}/testsuite/run-tests"
 test -x "${tests_dir}/testsuite/python/run-tests-python"
 test -f "${tests_dir}/nebius/ci/atf/merge_junit.py"
+test -f "${tests_dir}/nebius/ci/atf/shard_tests.py"
 test -x "${pmix_prefix}/bin/pmix_info"
 test -x "${openmpi_prefix}/bin/mpirun"
 test -x "${mpich_source}/configure"
@@ -307,6 +319,9 @@ write_manifest() {
 		--arg tests_commit "${tests_commit}" \
 		--arg atf_profile "${atf_profile}" \
 		--arg vm_profile "${vm_profile}" \
+		--arg shard_id "${shard_id}" \
+		--argjson shard_index "${shard_index}" \
+		--argjson shard_total "${shard_total}" \
 		'{
 		  schema: 1,
 		  release: {
@@ -315,7 +330,8 @@ write_manifest() {
 		    commit: $source_commit
 		  },
 		  tests: {master_commit: $tests_commit},
-		  atf: {profile: $atf_profile, vm_profile: $vm_profile}
+		  atf: {profile: $atf_profile, vm_profile: $vm_profile},
+		  shard: {id: $shard_id, index: $shard_index, total: $shard_total}
 		}' >"${manifest_tmp}"
 	sudo install -o atf -g atf -m 0644 "${manifest_tmp}" "${manifest}"
 	rm -f "${manifest_tmp}"
@@ -331,6 +347,9 @@ capture_inventory() {
 		echo "tests_master_commit=${tests_commit}"
 		echo "atf_profile=${atf_profile}"
 		echo "vm_profile=${vm_profile}"
+		echo "shard_id=${shard_id}"
+		echo "shard_index=${shard_index}"
+		echo "shard_total=${shard_total}"
 	} | sudo -u atf tee "${run_dir}/run-info.txt" >/dev/null
 	if command -v nvidia-smi >/dev/null 2>&1; then
 		nvidia-smi --query-gpu=index,name,uuid,driver_version,memory.total \
@@ -367,10 +386,23 @@ capture_phase_evidence() {
 
 run_pytest_group() {
 	local label="$1"
-	local target="$2"
+	local phase="$2"
 	local junit_file="${run_dir}/${label}-junit.xml"
 	local log_file="${run_dir}/${label}.out"
 	local status_file="${run_dir}/${label}-exit-status"
+	local selection_file="${run_dir}/${label}-selection.json"
+	local -a selected_files=()
+
+	sudo -u atf -H python3 "${tests_dir}/nebius/ci/atf/shard_tests.py" \
+		--test-root "${tests_dir}/testsuite/python" \
+		--phase "${phase}" \
+		--shard-id "${shard_id}" \
+		--shard-index "${shard_index}" \
+		--shard-total "${shard_total}" \
+		--vm-profile "${vm_profile}" \
+		--output "${selection_file}"
+	mapfile -t selected_files < <(jq -er '.selected_files[]' "${selection_file}")
+	((${#selected_files[@]} > 0))
 
 	date -u --iso-8601=seconds |
 		sudo -u atf tee "${run_dir}/${label}-started-utc" >/dev/null
@@ -391,7 +423,7 @@ run_pytest_group() {
 		--tb=long \
 		--durations=200 \
 		--junitxml="${junit_file}" \
-		"${target}" 2>&1 |
+		"${selected_files[@]}" 2>&1 |
 		sudo -u atf tee "${log_file}"
 	phase_status=${PIPESTATUS[0]}
 	set -e
@@ -431,7 +463,7 @@ pytest)
 	[[ "${expect_status}" == 0 || "${expect_status}" == 1 ]]
 	configure_atf
 	ensure_lmod_command
-	run_pytest_group python tests
+	run_pytest_group python python
 	# Make the second phase diagnosable even if validation or JUnit merging
 	# below fails. A successful merge is synced once more with final metadata.
 	sync_output

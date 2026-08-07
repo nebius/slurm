@@ -14,5 +14,6 @@ change this pointer merely to rerun CI. A new pointer requires a deliberate
 new vanilla baseline and review.
 
 Patch comparison workflows read this file from the release branch. This pins
-the baseline evidence, source and common-test commit, ATF infrastructure,
-compute image, VM shape, and ATF profile used for every later patch.
+the baseline evidence, source and common-test commit, ATF infrastructure, CPU
+and GPU images and shapes, plus the five-shard assignment used for every later
+patch.

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (($# != 8)); then
-	echo "usage: $0 PHASE PUBLIC_IP REMOTE_ROOT RUN_ID RELEASE_LINE SOURCE_COMMIT TESTS_COMMIT VM_PROFILE" >&2
+if (($# != 11)); then
+	echo "usage: $0 PHASE PUBLIC_IP REMOTE_ROOT RUN_ID RELEASE_LINE SOURCE_COMMIT TESTS_COMMIT VM_PROFILE SHARD_ID SHARD_INDEX SHARD_TOTAL" >&2
 	exit 2
 fi
 
@@ -14,6 +14,9 @@ release_line="$5"
 source_commit="$6"
 tests_commit="$7"
 vm_profile="$8"
+shard_id="$9"
+shard_index="${10}"
+shard_total="${11}"
 
 : "${SLURM_ATF_SSH_PRIVATE_KEY_FILE:?}"
 : "${SLURM_ATF_SSH_KNOWN_HOSTS_FILE:?}"
@@ -26,8 +29,10 @@ vm_profile="$8"
 [[ "${release_line}" =~ ^[0-9]+\.[0-9]+$ ]]
 [[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]
 [[ "${tests_commit}" =~ ^[0-9a-f]{40}$ ]]
-[[ "${vm_profile}" == generic || "${vm_profile}" == b200 || \
-	"${vm_profile}" == h200 ]]
+[[ "${vm_profile}" == generic || "${vm_profile}" == h200 ]]
+[[ "${shard_id}" =~ ^[a-zA-Z0-9._-]+$ ]]
+[[ "${shard_index}" =~ ^[0-9]+$ ]]
+[[ "${shard_total}" =~ ^[1-9][0-9]*$ ]]
 
 ssh \
 	-i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
@@ -44,7 +49,10 @@ ssh \
 		"${release_line}" \
 		"${source_commit}" \
 		"${tests_commit}" \
-		"${vm_profile}" <<'REMOTE'
+		"${vm_profile}" \
+		"${shard_id}" \
+		"${shard_index}" \
+		"${shard_total}" <<'REMOTE'
 set -euo pipefail
 phase="$1"
 root="$2"
@@ -53,6 +61,9 @@ release_line="$4"
 source_commit="$5"
 tests_commit="$6"
 vm_profile="$7"
+shard_id="$8"
+shard_index="$9"
+shard_total="${10}"
 source_dir="${root}/source"
 tests_dir="${root}/tests"
 infra_dir="${root}/external-infra/slurm-atf/infra"
@@ -76,6 +87,9 @@ set +e
 	"${source_commit}" \
 	"${tests_commit}" \
 	"${vm_profile}" \
+	"${shard_id}" \
+	"${shard_index}" \
+	"${shard_total}" \
 	2>&1 | tee "${root}/orchestration-${phase}.log"
 status=${PIPESTATUS[0]}
 set -e

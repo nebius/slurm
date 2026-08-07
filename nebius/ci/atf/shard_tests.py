@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Create a stable, auditable ATF file-level shard selection."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+
+GPU_REQUIRED = {
+    "expect/test_39_9.py",
+    "expect/test_40_8.py",
+}
+
+
+def discover(test_root: Path, phase: str) -> list[str]:
+    directory = test_root / ("expect" if phase == "expect" else "tests")
+    return sorted(
+        path.relative_to(test_root).as_posix()
+        for path in directory.glob("test_*.py")
+        if path.is_file()
+    )
+
+
+def assigned_index(path: str, shard_total: int, gpu_index: int) -> int:
+    if path in GPU_REQUIRED:
+        return gpu_index
+    digest = hashlib.sha256(path.encode()).digest()
+    return int.from_bytes(digest[:8], "big") % shard_total
+
+
+def build_manifest(
+    test_root: Path,
+    phase: str,
+    shard_id: str,
+    shard_index: int,
+    shard_total: int,
+    vm_profile: str,
+) -> dict[str, object]:
+    if shard_total < 2:
+        raise ValueError("shard_total must be at least 2")
+    if not 0 <= shard_index < shard_total:
+        raise ValueError("shard_index must be within the shard range")
+    if vm_profile not in {"generic", "h200"}:
+        raise ValueError("vm_profile must be generic or h200")
+
+    gpu_index = shard_total - 1
+    if (shard_index == gpu_index) != (vm_profile == "h200"):
+        raise ValueError("the last shard must be the only h200 shard")
+
+    files = discover(test_root, phase)
+    if not files:
+        raise ValueError(f"no {phase} tests found below {test_root}")
+    assignments = {
+        path: assigned_index(path, shard_total, gpu_index) for path in files
+    }
+    selected = [path for path in files if assignments[path] == shard_index]
+    if not selected:
+        raise ValueError(f"shard {shard_id} selected no {phase} tests")
+
+    inventory = json.dumps(files, separators=(",", ":"), ensure_ascii=True)
+    return {
+        "schema": 1,
+        "algorithm": "sha256-path-v1",
+        "phase": phase,
+        "shard": {
+            "id": shard_id,
+            "index": shard_index,
+            "total": shard_total,
+            "vm_profile": vm_profile,
+        },
+        "all_files_sha256": hashlib.sha256(inventory.encode()).hexdigest(),
+        "assignments": assignments,
+        "selected_files": selected,
+        "gpu_required_files": sorted(GPU_REQUIRED.intersection(files)),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test-root", required=True, type=Path)
+    parser.add_argument("--phase", required=True, choices=("expect", "python"))
+    parser.add_argument("--shard-id", required=True)
+    parser.add_argument("--shard-index", required=True, type=int)
+    parser.add_argument("--shard-total", required=True, type=int)
+    parser.add_argument("--vm-profile", required=True, choices=("generic", "h200"))
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+
+    try:
+        manifest = build_manifest(
+            args.test_root,
+            args.phase,
+            args.shard_id,
+            args.shard_index,
+            args.shard_total,
+            args.vm_profile,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -10,6 +10,9 @@ CUDA 13 image `computeimage-e00dyqcvp4vzdvkg3b`, verifies all eight H200 GPUs,
 and installs the same pinned ATF dependency stack used by the workflow.
 `valgrind` is installed only when its matching Ubuntu `libc6-dbg` package is
 available; the normal full suite does not enable its optional diagnostic mode.
+Ubuntu installs Lmod outside the default executable search path; the runtime
+harness exposes it as `/opt/slurm-atf/bin/lmod` and fails early if it is
+missing, instead of silently skipping the module tests.
 
 Prerequisites:
 

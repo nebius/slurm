@@ -42,9 +42,10 @@ jobs:
       baseline_tag: ${{ steps.baseline.outputs.baseline_tag }}
       release_line: ${{ steps.baseline.outputs.release_line }}
       tests_commit: ${{ steps.baseline.outputs.tests_commit }}
-      image_id: ${{ steps.baseline.outputs.image_id }}
-      atf_profile: ${{ steps.baseline.outputs.atf_profile }}
-      vm_shape: ${{ steps.baseline.outputs.vm_shape }}
+      cpu_image_id: ${{ steps.baseline.outputs.cpu_image_id }}
+      gpu_image_id: ${{ steps.baseline.outputs.gpu_image_id }}
+      cpu_vm_shape: ${{ steps.baseline.outputs.cpu_vm_shape }}
+      gpu_vm_shape: ${{ steps.baseline.outputs.gpu_vm_shape }}
     steps:
       - name: Checkout the candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -120,16 +121,23 @@ jobs:
           baseline_source="$(jq -er '.source.commit' baseline-evidence/run-metadata.json)"
           tests_commit="$(jq -er '.tests.commit' baseline-evidence/run-metadata.json)"
           upstream_commit="$(jq -er '.upstream_commit' "${descriptor}")"
-          image_id="$(jq -er '.vm.image_id' baseline-evidence/run-metadata.json)"
-          atf_profile="$(jq -er '.vm.atf_profile' baseline-evidence/run-metadata.json)"
-          vm_shape="$(jq -er '.vm.shape' baseline-evidence/run-metadata.json)"
+          test "$(jq -er '.vm.topology' baseline-evidence/run-metadata.json)" = \
+            4cpu+1gpu
+          cpu_image_id="$(jq -er '.vm.cpu.image_id' baseline-evidence/run-metadata.json)"
+          gpu_image_id="$(jq -er '.vm.gpu.image_id' baseline-evidence/run-metadata.json)"
+          cpu_vm_shape="$(jq -er '.vm.cpu.shape' baseline-evidence/run-metadata.json)"
+          gpu_vm_shape="$(jq -er '.vm.gpu.shape' baseline-evidence/run-metadata.json)"
           [[ "${baseline_source}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${tests_commit}" =~ ^[0-9a-f]{40}$ ]]
           [[ "${upstream_commit}" =~ ^[0-9a-f]{40}$ ]]
-          [[ "${image_id}" =~ ^computeimage-[a-z0-9]+$ ]]
-          [[ "${atf_profile}" == generic || "${atf_profile}" == b200 || \
-            "${atf_profile}" == h200 ]]
-          [[ "${vm_shape}" != *$'\n'* && -n "${vm_shape}" ]]
+          [[ "${cpu_image_id}" =~ ^computeimage-[a-z0-9]+$ ]]
+          [[ "${gpu_image_id}" =~ ^computeimage-[a-z0-9]+$ ]]
+          test "$(jq -er '.vm.cpu.count' baseline-evidence/run-metadata.json)" = 4
+          test "$(jq -er '.vm.cpu.atf_profile' baseline-evidence/run-metadata.json)" = generic
+          test "$(jq -er '.vm.gpu.count' baseline-evidence/run-metadata.json)" = 1
+          test "$(jq -er '.vm.gpu.atf_profile' baseline-evidence/run-metadata.json)" = h200
+          [[ "${cpu_vm_shape}" != *$'\n'* && -n "${cpu_vm_shape}" ]]
+          [[ "${gpu_vm_shape}" != *$'\n'* && -n "${gpu_vm_shape}" ]]
           test "$(jq -er '.kind' baseline-evidence/run-metadata.json)" = baseline
           test "$(jq -er '.result.junit_sha256' baseline-evidence/run-metadata.json)" = \
             "$(sha256sum baseline-evidence/junit.xml | awk '{print $1}')"
@@ -139,9 +147,10 @@ jobs:
             echo "baseline_tag=${baseline_tag}"
             echo "release_line=${release_line}"
             echo "tests_commit=${tests_commit}"
-            echo "image_id=${image_id}"
-            echo "atf_profile=${atf_profile}"
-            echo "vm_shape=${vm_shape}"
+            echo "cpu_image_id=${cpu_image_id}"
+            echo "gpu_image_id=${gpu_image_id}"
+            echo "cpu_vm_shape=${cpu_vm_shape}"
+            echo "gpu_vm_shape=${gpu_vm_shape}"
           } >>"${GITHUB_OUTPUT}"
           {
             echo "### Patch comparison input"
@@ -150,22 +159,23 @@ jobs:
             echo "- Clean upstream: \`${upstream_commit}\`"
             echo "- Baseline source: \`${baseline_source}\`"
             echo "- Common tests: \`${tests_commit}\`"
-            echo "- Image: \`${image_id}\`"
-            echo "- VM: \`${vm_shape}\` (\`${atf_profile}\`)"
+            echo "- CPU shards: \`4 x ${cpu_vm_shape}\` using \`${cpu_image_id}\`"
+            echo "- GPU shard: \`1 x ${gpu_vm_shape}\` using \`${gpu_image_id}\`"
             echo "- Candidate: \`$(git rev-parse HEAD)\`"
           } >>"${GITHUB_STEP_SUMMARY}"
 
   run:
     name: Run the candidate suite
     needs: prepare
-    uses: ./.github/workflows/_slurm-atf-run.yml
+    uses: ./.github/workflows/_slurm-atf-sharded-run.yml
     with:
       run_kind: candidate
       release_line: ${{ needs.prepare.outputs.release_line }}
       tests_ref: ${{ needs.prepare.outputs.tests_commit }}
-      image_id: ${{ needs.prepare.outputs.image_id }}
-      atf_profile: ${{ needs.prepare.outputs.atf_profile }}
-      expected_vm_shape: ${{ needs.prepare.outputs.vm_shape }}
+      cpu_image_id: ${{ needs.prepare.outputs.cpu_image_id }}
+      gpu_image_id: ${{ needs.prepare.outputs.gpu_image_id }}
+      expected_cpu_vm_shape: ${{ needs.prepare.outputs.cpu_vm_shape }}
+      expected_gpu_vm_shape: ${{ needs.prepare.outputs.gpu_vm_shape }}
       nebius_cli_profile: ${{ inputs.nebius_cli_profile || 'default' }}
       keep_vm_on_failure: ${{ inputs.keep_vm_on_failure || false }}
     secrets: inherit
@@ -235,9 +245,8 @@ jobs:
             '.tests.commit' \
             '.infrastructure.repository' \
             '.infrastructure.commit' \
-            '.vm.image_id' \
-            '.vm.shape' \
-            '.vm.atf_profile'; do
+            '.vm' \
+            '.sharding'; do
             test "$(jq -er "${query}" "${baseline}")" = \
               "$(jq -er "${query}" "${candidate}")"
           done

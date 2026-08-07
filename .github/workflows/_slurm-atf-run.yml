@@ -24,6 +24,18 @@ on:
         required: false
         default: generic
         type: string
+      shard_id:
+        description: Stable shard name, for example cpu-0 or gpu
+        required: true
+        type: string
+      shard_index:
+        description: Zero-based shard index
+        required: true
+        type: number
+      shard_total:
+        description: Total number of shards
+        required: true
+        type: number
       expected_vm_shape:
         description: Optional exact VM shape required by immutable baseline metadata
         required: false
@@ -59,7 +71,7 @@ permissions:
 
 jobs:
   expect:
-    name: Build Slurm and run Expect wrappers / ${{ inputs.run_kind }}
+    name: Build Slurm and run Expect wrappers / ${{ inputs.run_kind }} / ${{ inputs.shard_id }}
     runs-on: ubuntu-24.04
     environment: e2e
     timeout-minutes: 350
@@ -77,7 +89,7 @@ jobs:
       NEBIUS_CLI_VERSION: 0.12.253
       NEBIUS_CLI_PROFILE: ${{ inputs.nebius_cli_profile }}
       NEBIUS_VM_IMAGE_ID: ${{ inputs.image_id }}
-      NEBIUS_VM_NAME: slurm-atf-${{ github.run_id }}-${{ github.run_attempt }}
+      NEBIUS_VM_NAME: slurm-atf-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.shard_id }}
       ATF_INFRA_COMMIT: d6c8f15e431d41fc03eb87d276c02c9e485e6ac9
 
     steps:
@@ -168,8 +180,16 @@ jobs:
           [[ "${{ inputs.run_kind }}" == baseline || "${{ inputs.run_kind }}" == candidate ]]
           [[ "${{ inputs.release_line }}" =~ ^[0-9]+\.[0-9]+$ ]]
           [[ "${{ inputs.atf_profile }}" == generic || \
-            "${{ inputs.atf_profile }}" == b200 || \
             "${{ inputs.atf_profile }}" == h200 ]]
+          [[ "${{ inputs.shard_id }}" =~ ^[a-zA-Z0-9._-]+$ ]]
+          [[ "${{ inputs.shard_index }}" =~ ^[0-9]+$ ]]
+          [[ "${{ inputs.shard_total }}" =~ ^[1-9][0-9]*$ ]]
+          (( ${{ inputs.shard_index }} < ${{ inputs.shard_total }} ))
+          if (( ${{ inputs.shard_index }} == ${{ inputs.shard_total }} - 1 )); then
+            test "${{ inputs.atf_profile }}" = h200
+          else
+            test "${{ inputs.atf_profile }}" = generic
+          fi
           if [[ -z "${ATF_CLOUD_PROFILE}" ]]; then
             echo "::error::The selected Slurm ATF cloud profile variable is empty"
             exit 1
@@ -237,6 +257,7 @@ jobs:
             echo "- Shape: \`${vm_shape}\`"
             echo "- VM hardware profile: \`${{ inputs.atf_profile }}\`"
             echo "- Full-suite cluster profile: \`generic\`"
+            echo "- Shard: \`${{ inputs.shard_id }}\` (index ${{ inputs.shard_index }} of ${{ inputs.shard_total }})"
             echo "- Phase 1: build + Expect wrappers"
             echo "- Phase 2: Python tests on the same VM"
           } >>"${GITHUB_STEP_SUMMARY}"
@@ -368,7 +389,7 @@ jobs:
         run: |
           set -euo pipefail
           remote_root="/home/${SLURM_ATF_SSH_USER}/slurm-atf"
-          run_id="${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          run_id="${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ inputs.shard_id }}"
           tests/nebius/ci/atf/run-remote-phase.sh \
             expect \
             "${NEBIUS_VM_PUBLIC_IP}" \
@@ -377,7 +398,10 @@ jobs:
             "${{ inputs.release_line }}" \
             "${{ steps.checkout_metadata.outputs.source_commit }}" \
             "${{ steps.checkout_metadata.outputs.tests_commit }}" \
-            "${{ inputs.atf_profile }}"
+            "${{ inputs.atf_profile }}" \
+            "${{ inputs.shard_id }}" \
+            "${{ inputs.shard_index }}" \
+            "${{ inputs.shard_total }}"
 
       - if: always() && steps.wait_vm.outcome == 'success'
         name: Collect Expect phase evidence
@@ -408,7 +432,7 @@ jobs:
         name: Upload Expect phase evidence
         uses: actions/upload-artifact@v7
         with:
-          name: slurm-atf-expect-${{ inputs.run_kind }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: slurm-atf-expect-${{ inputs.run_kind }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.shard_id }}
           path: expect-result/
           if-no-files-found: error
           retention-days: 30
@@ -420,7 +444,7 @@ jobs:
           exit 1
 
   pytest:
-    name: Run Python tests and finalize evidence / ${{ inputs.run_kind }}
+    name: Run Python tests and finalize evidence / ${{ inputs.run_kind }} / ${{ inputs.shard_id }}
     needs: expect
     runs-on: ubuntu-24.04
     environment: e2e
@@ -431,7 +455,7 @@ jobs:
       NEBIUS_CLI_VERSION: 0.12.253
       NEBIUS_CLI_PROFILE: ${{ inputs.nebius_cli_profile }}
       NEBIUS_VM_IMAGE_ID: ${{ inputs.image_id }}
-      NEBIUS_VM_NAME: slurm-atf-${{ github.run_id }}-${{ github.run_attempt }}
+      NEBIUS_VM_NAME: slurm-atf-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.shard_id }}
       NEBIUS_VM_ID: ${{ needs.expect.outputs.vm_id }}
       NEBIUS_VM_PUBLIC_IP: ${{ needs.expect.outputs.public_ip }}
       SLURM_ATF_SSH_USER: ${{ needs.expect.outputs.ssh_user }}
@@ -546,7 +570,7 @@ jobs:
         run: |
           set -euo pipefail
           remote_root="/home/${SLURM_ATF_SSH_USER}/slurm-atf"
-          run_id="${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          run_id="${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ inputs.shard_id }}"
           tests/nebius/ci/atf/run-remote-phase.sh \
             pytest \
             "${NEBIUS_VM_PUBLIC_IP}" \
@@ -555,7 +579,10 @@ jobs:
             "${{ inputs.release_line }}" \
             "${{ needs.expect.outputs.source_commit }}" \
             "${{ needs.expect.outputs.tests_commit }}" \
-            "${{ inputs.atf_profile }}"
+            "${{ inputs.atf_profile }}" \
+            "${{ inputs.shard_id }}" \
+            "${{ inputs.shard_index }}" \
+            "${{ inputs.shard_total }}"
 
       - if: always()
         name: Collect complete ATF evidence
@@ -615,9 +642,15 @@ jobs:
           test "$(jq -er '.atf.vm_profile' atf-result/run-manifest.json)" = \
             "${{ inputs.atf_profile }}"
           test "$(jq -er '.atf.profile' atf-result/run-manifest.json)" = generic
+          test "$(jq -er '.shard.id' atf-result/run-manifest.json)" = \
+            "${{ inputs.shard_id }}"
+          test "$(jq -er '.shard.index' atf-result/run-manifest.json)" = \
+            "${{ inputs.shard_index }}"
+          test "$(jq -er '.shard.total' atf-result/run-manifest.json)" = \
+            "${{ inputs.shard_total }}"
           jq -e '.schema == 1' atf-result/image-metadata.json >/dev/null
           junit_sha256="$(sha256sum atf-result/junit.xml | awk '{print $1}')"
-          artifact_name="slurm-atf-${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          artifact_name="slurm-atf-shard-${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ inputs.shard_id }}"
 
           jq -n \
             --arg kind "${{ inputs.run_kind }}" \
@@ -630,6 +663,9 @@ jobs:
             --arg image_id "${NEBIUS_VM_IMAGE_ID}" \
             --arg vm_shape "${{ needs.expect.outputs.vm_shape }}" \
             --arg atf_profile "${{ inputs.atf_profile }}" \
+            --arg shard_id "${{ inputs.shard_id }}" \
+            --argjson shard_index "${{ inputs.shard_index }}" \
+            --argjson shard_total "${{ inputs.shard_total }}" \
             --arg junit_sha256 "${junit_sha256}" \
             --arg pytest_status "${pytest_status}" \
             --arg expect_status "${expect_status}" \
@@ -645,6 +681,7 @@ jobs:
               tests: {commit: $tests_commit},
               infrastructure: {repository: $infra_repository, commit: $infra_commit},
               vm: {image_id: $image_id, shape: $vm_shape, atf_profile: $atf_profile},
+              shard: {id: $shard_id, index: $shard_index, total: $shard_total},
               result: {
                 junit_sha256: $junit_sha256,
                 pytest_exit_status: ($pytest_status | tonumber),
@@ -669,7 +706,7 @@ jobs:
         name: Upload complete ATF evidence
         uses: actions/upload-artifact@v7
         with:
-          name: slurm-atf-${{ inputs.run_kind }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: slurm-atf-shard-${{ inputs.run_kind }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.shard_id }}
           path: atf-result/
           if-no-files-found: error
           retention-days: 30
@@ -681,7 +718,7 @@ jobs:
           exit 1
 
   cleanup:
-    name: Delete the disposable Nebius VM
+    name: Delete the disposable Nebius VM / ${{ inputs.shard_id }}
     needs:
       - expect
       - pytest
@@ -693,7 +730,7 @@ jobs:
       ATF_CLOUD_PROFILE: ${{ inputs.atf_profile == 'h200' && vars.SLURM_ATF_H200_PROFILE || vars.SLURM_ATF_PROFILE }}
       NEBIUS_CLI_VERSION: 0.12.253
       NEBIUS_CLI_PROFILE: ${{ inputs.nebius_cli_profile }}
-      NEBIUS_VM_NAME: slurm-atf-${{ github.run_id }}-${{ github.run_attempt }}
+      NEBIUS_VM_NAME: slurm-atf-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.shard_id }}
       NEBIUS_VM_ID: ${{ needs.expect.outputs.vm_id }}
       KEEP_VM_ON_FAILURE: ${{ inputs.keep_vm_on_failure }}
       EXPECT_RESULT: ${{ needs.expect.result }}

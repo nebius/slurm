@@ -21,6 +21,8 @@ EXPECTED_SHARDS = {
     "gpu": (4, "h200"),
 }
 
+SHARD_ALGORITHM = "balanced-hash-v1"
+
 
 def read_json(path: Path) -> dict[str, object]:
     try:
@@ -78,10 +80,11 @@ def validate_selections(
     assignments = nested(reference, "assignments")
     inventory_hash = nested(reference, "all_files_sha256")
     algorithm = nested(reference, "algorithm")
-    if not isinstance(assignments, dict) or algorithm != "sha256-path-v1":
+    if not isinstance(assignments, dict) or algorithm != SHARD_ALGORITHM:
         raise ValueError(f"invalid {phase} selection manifest")
 
     selected_union: set[str] = set()
+    file_counts: dict[str, int] = {}
     for shard_id, manifest in manifests.items():
         index, profile = EXPECTED_SHARDS[shard_id]
         if nested(manifest, "assignments") != assignments:
@@ -104,6 +107,7 @@ def validate_selections(
         )
         if selected != expected:
             raise ValueError(f"selected {phase} files do not match assignments")
+        file_counts[shard_id] = len(selected)
         overlap = selected_union.intersection(selected)
         if overlap:
             raise ValueError(f"duplicate {phase} file assignment: {min(overlap)}")
@@ -126,10 +130,13 @@ def validate_selections(
 
     if selected_union != set(assignments):
         raise ValueError(f"incomplete {phase} file coverage")
+    if max(file_counts.values()) - min(file_counts.values()) > 1:
+        raise ValueError(f"unbalanced {phase} file counts: {file_counts}")
     return {
         "algorithm": algorithm,
         "all_files_sha256": inventory_hash,
         "assignments": assignments,
+        "file_counts": file_counts,
     }
 
 
@@ -283,11 +290,14 @@ def aggregate(
         "tests": {"master_commit": nested(tests, "commit")},
         "sharding": {
             "topology": "4cpu+1gpu",
-            "algorithm": "sha256-path-v1",
+            "algorithm": SHARD_ALGORITHM,
             "shards": shard_entries,
             "inventories": {
                 phase: selections[phase]["all_files_sha256"]
                 for phase in selections
+            },
+            "file_counts": {
+                phase: selections[phase]["file_counts"] for phase in selections
             },
         },
     }
@@ -305,11 +315,14 @@ def aggregate(
         "infrastructure": infrastructure,
         "vm": {"topology": "4cpu+1gpu", **vm},
         "sharding": {
-            "algorithm": "sha256-path-v1",
+            "algorithm": SHARD_ALGORITHM,
             "shards": shard_entries,
             "inventories": {
                 phase: selections[phase]["all_files_sha256"]
                 for phase in selections
+            },
+            "file_counts": {
+                phase: selections[phase]["file_counts"] for phase in selections
             },
         },
         "result": {

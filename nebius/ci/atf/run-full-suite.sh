@@ -110,6 +110,10 @@ configure_atf() {
 		SLURM_TESTS_SOURCE_DIR="${tests_dir}" \
 		SLURM_ATF_PROFILE="${atf_profile}" \
 		"${infra_dir}/configure-atf.sh"
+
+	if [[ "${vm_profile}" == h200 ]]; then
+		test -f "${install_dir}/lib/slurm/gpu_nvml.so"
+	fi
 }
 
 disable_broken_modules_profile() {
@@ -414,6 +418,7 @@ run_pytest_group() {
 		SLURM_TESTS_SOURCE_DIR="${tests_dir}" \
 		SLURM_RELEASE_MANIFEST="${manifest}" \
 		SLURM_ATF_RUN_ID="${run_id}" \
+		SLURM_ATF_VM_PROFILE="${vm_profile}" \
 		"${atf_root}/run-env.sh" \
 		"${tests_dir}/testsuite/python/run-tests-python" \
 		--auto-config \

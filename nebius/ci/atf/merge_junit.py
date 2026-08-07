@@ -12,6 +12,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
+_OUTCOME_PRIORITY = {"skipped": 1, "failure": 2, "error": 3}
+
+
 def _testcase_identity(case: ET.Element) -> tuple[str, str, str]:
     return (
         case.get("file", ""),
@@ -37,6 +40,51 @@ def _suites(path: Path) -> list[ET.Element]:
     return suites
 
 
+def _merge_duplicate_case(target: ET.Element, duplicate: ET.Element) -> None:
+    """Collapse pytest call/teardown records into one comparable testcase."""
+    target_time = float(target.get("time", "0"))
+    duplicate_time = float(duplicate.get("time", "0"))
+    target.set("time", f"{target_time + duplicate_time:.6f}")
+
+    outcomes = [
+        child
+        for case in (target, duplicate)
+        for child in case
+        if child.tag in _OUTCOME_PRIORITY
+    ]
+    if outcomes:
+        winning_outcome = max(
+            outcomes, key=lambda child: _OUTCOME_PRIORITY[child.tag]
+        )
+        for child in list(target):
+            if child.tag in _OUTCOME_PRIORITY:
+                target.remove(child)
+        target.append(copy.deepcopy(winning_outcome))
+
+    # The raw phase reports remain in the artifact. Preserve additional output
+    # in the aggregate report while avoiding duplicate pytest properties.
+    for child in duplicate:
+        if child.tag not in _OUTCOME_PRIORITY and child.tag != "properties":
+            target.append(copy.deepcopy(child))
+
+
+def _coalesce_cases(
+    suite: ET.Element,
+    seen: dict[tuple[str, str, str], ET.Element],
+) -> None:
+    for parent in suite.iter():
+        for case in list(parent):
+            if case.tag != "testcase":
+                continue
+            identity = _testcase_identity(case)
+            previous = seen.get(identity)
+            if previous is None:
+                seen[identity] = case
+                continue
+            _merge_duplicate_case(previous, case)
+            parent.remove(case)
+
+
 def _suite_totals(suite: ET.Element) -> dict[str, float | int]:
     cases = suite.findall(".//testcase")
     return {
@@ -60,17 +108,23 @@ def merge(expect_path: Path, python_path: Path, output_path: Path) -> None:
     }
 
     for phase, path in (("expect", expect_path), ("python", python_path)):
+        phase_suites: list[ET.Element] = []
+        phase_seen: dict[tuple[str, str, str], ET.Element] = {}
         for source_suite in _suites(path):
             suite = copy.deepcopy(source_suite)
             original_name = suite.get("name", "pytest")
             suite.set("name", f"{phase}/{original_name}")
-            for case in suite.findall(".//testcase"):
-                identity = _testcase_identity(case)
-                if identity in seen:
-                    rendered = "::".join(part for part in identity if part)
-                    raise ValueError(f"duplicate testcase across phases: {rendered}")
-                seen.add(identity)
+            _coalesce_cases(suite, phase_seen)
+            phase_suites.append(suite)
 
+        overlap = seen.intersection(phase_seen)
+        if overlap:
+            identity = min(overlap)
+            rendered = "::".join(part for part in identity if part)
+            raise ValueError(f"duplicate testcase across phases: {rendered}")
+        seen.update(phase_seen)
+
+        for suite in phase_suites:
             suite_totals = _suite_totals(suite)
             for key in ("tests", "failures", "errors", "skipped"):
                 suite.set(key, str(suite_totals[key]))

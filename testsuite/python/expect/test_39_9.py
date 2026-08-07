@@ -1,6 +1,8 @@
 ############################################################################
 # Copyright (C) SchedMD LLC.
 ############################################################################
+import os
+
 import pytest
 
 import atf
@@ -15,11 +17,14 @@ def setup():
 
     atf.require_config_file(
         "gres.conf",
-        "Autodetect=nvml",
+        "NodeName=node0 AutoDetect=nvml",
     )
     atf.require_slurm_running()
 
 
-@pytest.mark.skip("Requires Autodetect=nvml")
+@pytest.mark.skipif(
+    os.environ.get("SLURM_ATF_VM_PROFILE") != "h200",
+    reason="Requires the dedicated H200 ATF profile with NVML",
+)
 def test_expect():
     atf.run_expect_test()

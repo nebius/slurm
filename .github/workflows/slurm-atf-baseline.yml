@@ -158,7 +158,7 @@ jobs:
           test "$(jq -er '.vm.gpu.atf_profile' baseline-evidence/run-metadata.json)" = \
             h200
           test "$(jq -er '.sharding.algorithm' baseline-evidence/run-metadata.json)" = \
-            sha256-path-v1
+            balanced-hash-v1
           test "$(jq -er '.sharding.shards | length' baseline-evidence/run-metadata.json)" = 5
           test "$(jq -er '.result.pytest_exit_status' baseline-evidence/run-metadata.json)" = \
             "$(<baseline-evidence/pytest-exit-status)"

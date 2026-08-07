@@ -4,7 +4,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from aggregate_shards import EXPECTED_SHARDS, aggregate
+from aggregate_shards import EXPECTED_SHARDS, SHARD_ALGORITHM, aggregate
 
 
 def write_junit(path: Path, file_name: str) -> None:
@@ -51,7 +51,7 @@ def make_evidence(root: Path) -> None:
             selected = [path for path, owner in assignments.items() if owner == index]
             selection = {
                 "schema": 1,
-                "algorithm": "sha256-path-v1",
+                "algorithm": SHARD_ALGORITHM,
                 "phase": phase,
                 "all_files_sha256": f"{phase}-inventory",
                 "assignments": assignments,

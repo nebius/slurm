@@ -115,6 +115,29 @@ disable_broken_modules_profile() {
 	fi
 }
 
+ensure_lmod_command() {
+	local lmod_executable=/usr/share/lmod/lmod/libexec/lmod
+	local lmod_link="${atf_root}/bin/lmod"
+
+	# Ubuntu installs Lmod's executable outside the default PATH. ATF checks
+	# for and invokes a literal `lmod` command, so leaving it there silently
+	# skips the module tests even though the package and modulefiles exist.
+	if sudo -u atf -H "${atf_root}/run-env.sh" \
+		sh -c 'command -v lmod >/dev/null 2>&1'; then
+		return
+	fi
+
+	if [[ ! -x "${lmod_executable}" ]]; then
+		echo "Lmod is required by the full ATF suite, but ${lmod_executable} is unavailable" >&2
+		return 1
+	fi
+
+	sudo install -d -o root -g root -m 0755 "$(dirname "${lmod_link}")"
+	sudo ln -sfn "${lmod_executable}" "${lmod_link}"
+	sudo -u atf -H "${atf_root}/run-env.sh" \
+		sh -c 'command -v lmod >/dev/null 2>&1'
+}
+
 legacy_topology_makefile=""
 legacy_topology_dir_created=false
 
@@ -269,6 +292,7 @@ prepare_build() {
 	sudo chown -R atf:atf "${tests_dir}"
 	disable_broken_modules_profile
 	configure_atf
+	ensure_lmod_command
 }
 
 write_manifest() {
@@ -406,6 +430,7 @@ pytest)
 	expect_status="$(<"${run_dir}/expect-exit-status")"
 	[[ "${expect_status}" == 0 || "${expect_status}" == 1 ]]
 	configure_atf
+	ensure_lmod_command
 	run_pytest_group python tests
 	# Make the second phase diagnosable even if validation or JUnit merging
 	# below fails. A successful merge is synced once more with final metadata.

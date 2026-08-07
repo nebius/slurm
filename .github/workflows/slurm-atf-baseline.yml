@@ -24,7 +24,7 @@ on:
         default: computeimage-e00sphs75y9ej9nw9j
         type: string
       atf_profile:
-        description: ATF hardware profile represented by the image and VM shape
+        description: VM hardware profile; the full ATF cluster stays generic
         required: true
         default: generic
         type: choice

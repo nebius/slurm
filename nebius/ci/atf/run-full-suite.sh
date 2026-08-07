@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if (($# != 11)); then
-	echo "usage: $0 PHASE SOURCE_DIR TESTS_DIR INFRA_DIR BUILD_DIR OUTPUT_DIR RUN_ID RELEASE_LINE SOURCE_COMMIT TESTS_COMMIT ATF_PROFILE" >&2
+	echo "usage: $0 PHASE SOURCE_DIR TESTS_DIR INFRA_DIR BUILD_DIR OUTPUT_DIR RUN_ID RELEASE_LINE SOURCE_COMMIT TESTS_COMMIT VM_PROFILE" >&2
 	exit 2
 fi
 
@@ -17,7 +17,8 @@ run_id="$6"
 release_line="$7"
 source_commit="$8"
 tests_commit="$9"
-atf_profile="${10}"
+vm_profile="${10}"
+atf_profile=generic
 
 atf_root=/opt/slurm-atf
 install_dir="${atf_root}/install"
@@ -39,8 +40,8 @@ phase_status=0
 [[ "${release_line}" =~ ^[0-9]+\.[0-9]+$ ]]
 [[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]
 [[ "${tests_commit}" =~ ^[0-9a-f]{40}$ ]]
-[[ "${atf_profile}" == generic || "${atf_profile}" == b200 || \
-	"${atf_profile}" == h200 ]]
+[[ "${vm_profile}" == generic || "${vm_profile}" == b200 || \
+	"${vm_profile}" == h200 ]]
 [[ "${jobs}" =~ ^[1-9][0-9]*$ ]]
 
 sudo test -f /etc/slurm-atf-disposable
@@ -67,7 +68,7 @@ jq -e '
   .stack.mpich_version == "5.0.1"
 ' /etc/slurm-atf-image.json >/dev/null
 
-if [[ "${atf_profile}" == h200 ]]; then
+if [[ "${vm_profile}" == h200 ]]; then
 	command -v nvidia-smi >/dev/null
 	test -x /usr/local/cuda/bin/nvcc
 	test -f /usr/local/cuda/include/nvml.h
@@ -97,6 +98,21 @@ configure_atf() {
 		SLURM_TESTS_SOURCE_DIR="${tests_dir}" \
 		SLURM_ATF_PROFILE="${atf_profile}" \
 		"${infra_dir}/configure-atf.sh"
+}
+
+disable_broken_modules_profile() {
+	local modules_profile=/etc/profile.d/modules.sh
+	local modules_init=/usr/share/modules/init/sh
+	local disabled_profile=/etc/profile.d/modules.sh.disabled-by-slurm-atf
+
+	# Some GPU images ship an Environment Modules profile that sources a
+	# missing init script. Every ATF login shell then prefixes stderr with an
+	# unrelated error and breaks tests that assert the first diagnostic line.
+	if [[ -f "${modules_profile}" ]] &&
+		grep -Fq "${modules_init}" "${modules_profile}" &&
+		[[ ! -f "${modules_init}" ]]; then
+		sudo mv -f "${modules_profile}" "${disabled_profile}"
+	fi
 }
 
 legacy_topology_makefile=""
@@ -251,6 +267,7 @@ prepare_build() {
 	# Tests modify generated configuration and temporary files, but never the
 	# separate source-under-test checkout.
 	sudo chown -R atf:atf "${tests_dir}"
+	disable_broken_modules_profile
 	configure_atf
 }
 
@@ -265,6 +282,7 @@ write_manifest() {
 		--arg source_commit "${source_commit}" \
 		--arg tests_commit "${tests_commit}" \
 		--arg atf_profile "${atf_profile}" \
+		--arg vm_profile "${vm_profile}" \
 		'{
 		  schema: 1,
 		  release: {
@@ -273,7 +291,7 @@ write_manifest() {
 		    commit: $source_commit
 		  },
 		  tests: {master_commit: $tests_commit},
-		  atf: {profile: $atf_profile}
+		  atf: {profile: $atf_profile, vm_profile: $vm_profile}
 		}' >"${manifest_tmp}"
 	sudo install -o atf -g atf -m 0644 "${manifest_tmp}" "${manifest}"
 	rm -f "${manifest_tmp}"
@@ -288,6 +306,7 @@ capture_inventory() {
 		echo "slurm_version=$(${install_dir}/bin/sinfo --version)"
 		echo "tests_master_commit=${tests_commit}"
 		echo "atf_profile=${atf_profile}"
+		echo "vm_profile=${vm_profile}"
 	} | sudo -u atf tee "${run_dir}/run-info.txt" >/dev/null
 	if command -v nvidia-smi >/dev/null 2>&1; then
 		nvidia-smi --query-gpu=index,name,uuid,driver_version,memory.total \

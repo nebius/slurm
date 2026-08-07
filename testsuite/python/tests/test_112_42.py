@@ -70,21 +70,36 @@ def slurmdb(setup):
     yield atf.openapi_slurmdb()
 
 
+def ensure_local_admin():
+    atf.run_command(
+        f"sacctmgr -i add user {local_user_name} cluster={local_cluster_name} account=root defaultaccount=root AdminLevel=Admin",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
+    atf.run_command(
+        f"sacctmgr -i modify user where name={local_user_name} cluster={local_cluster_name} set defaultaccount=root AdminLevel=Admin",
+        user=atf.properties["slurm-user"],
+        fatal=True,
+    )
+
+
 @pytest.fixture(scope="function")
 def admin_level(setup):
-    def ensure_local_admin():
-        atf.run_command(
-            f"sacctmgr -i add user {local_user_name} cluster={local_cluster_name} account=root defaultaccount=root AdminLevel=Admin",
-            user=atf.properties["slurm-user"],
-            fatal=False,
-        )
-        atf.run_command(
-            f"sacctmgr -i modify user where name={local_user_name} cluster={local_cluster_name} set defaultaccount=root AdminLevel=Admin",
-            user=atf.properties["slurm-user"],
-            fatal=True,
-        )
-
     ensure_local_admin()
+    yield
+    atf.cancel_all_jobs()
+    ensure_local_admin()
+
+
+@pytest.fixture(scope="function")
+def no_local_association(setup):
+    """Run a test without the association created by earlier admin fixtures."""
+    atf.cancel_all_jobs()
+    atf.run_command(
+        f"sacctmgr -i delete user where name={local_user_name} cluster={local_cluster_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
     yield
     atf.cancel_all_jobs()
     ensure_local_admin()
@@ -1086,7 +1101,7 @@ def test_db_config(slurmdb, admin_level):
 @pytest.mark.xfail(
     reason="Ticket 20394 about jobs without associations, fixed for v43+"
 )
-def test_jobs(slurm, slurmdb):
+def test_jobs(slurm, slurmdb, no_local_association):
     from openapi_client.models.v0042_job_desc_msg import V0042JobDescMsg
     from openapi_client.models.v0042_job_info import V0042JobInfo
     from openapi_client.models.v0042_job_submit_req import V0042JobSubmitReq

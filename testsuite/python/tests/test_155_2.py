@@ -252,6 +252,12 @@ def assert_ids(ids):
 def test_totals_match_time_series(field, time_series_rows, totals_rows):
     """Node:Totals values match the extracted Node:TimeSeries samples"""
 
+    if field == "GPUMemMB":
+        pytest.skip(
+            "The CPU-only fixture does not allocate a GPU; GPUMemMB samples "
+            "are undefined without GPU accounting"
+        )
+
     time_series_by_id = grouped_by_id(time_series_rows)
     totals_by_id = {row_identity(row): row for row in totals_rows}
 

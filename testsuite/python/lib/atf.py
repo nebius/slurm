@@ -2804,15 +2804,16 @@ def config_parameter_includes(name, value, **get_config_kwargs):
 
     config_dict = get_config(**get_config_kwargs)
 
-    # Convert keys to lower case so we can do a case-insensitive search
+    # Convert keys to lower case so we can do a case-insensitive search.
+    # Parsed scalar values (for example ``JobAcctGatherFrequency=4``) may be
+    # integers, so normalize the value before treating it as a comma list.
     lower_dict = dict((key.casefold(), value) for key, value in config_dict.items())
-
-    if name.casefold() in lower_dict and value.lower() in map(
-        str.lower, lower_dict[name.casefold()].split(",")
-    ):
-        return True
-    else:
+    parameter_value = lower_dict.get(name.casefold())
+    if parameter_value is None:
         return False
+
+    tokens = (token.strip().casefold() for token in str(parameter_value).split(","))
+    return str(value).strip().casefold() in tokens
 
 
 def set_config_parameter(

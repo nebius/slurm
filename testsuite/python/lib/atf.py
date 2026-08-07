@@ -3407,7 +3407,13 @@ def require_config_parameter(
             if v is None:
                 # None means expected unset, but parameter was set
                 continue
-            obs = type(v)(observed_value)
+            try:
+                obs = type(v)(observed_value)
+            except (TypeError, ValueError):
+                # A differently formatted current value is simply not a
+                # match. In auto-config mode it must be replaced by the
+                # requested value instead of aborting fixture setup.
+                continue
             if operator == "==" and obs == v:
                 condition_satisfied = True
                 break

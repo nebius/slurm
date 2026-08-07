@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if (($# != 8)); then
-	echo "usage: $0 PHASE PUBLIC_IP REMOTE_ROOT RUN_ID RELEASE_LINE SOURCE_COMMIT TESTS_COMMIT ATF_PROFILE" >&2
+	echo "usage: $0 PHASE PUBLIC_IP REMOTE_ROOT RUN_ID RELEASE_LINE SOURCE_COMMIT TESTS_COMMIT VM_PROFILE" >&2
 	exit 2
 fi
 
@@ -13,7 +13,7 @@ run_id="$4"
 release_line="$5"
 source_commit="$6"
 tests_commit="$7"
-atf_profile="$8"
+vm_profile="$8"
 
 : "${SLURM_ATF_SSH_PRIVATE_KEY_FILE:?}"
 : "${SLURM_ATF_SSH_KNOWN_HOSTS_FILE:?}"
@@ -26,8 +26,8 @@ atf_profile="$8"
 [[ "${release_line}" =~ ^[0-9]+\.[0-9]+$ ]]
 [[ "${source_commit}" =~ ^[0-9a-f]{40}$ ]]
 [[ "${tests_commit}" =~ ^[0-9a-f]{40}$ ]]
-[[ "${atf_profile}" == generic || "${atf_profile}" == b200 || \
-	"${atf_profile}" == h200 ]]
+[[ "${vm_profile}" == generic || "${vm_profile}" == b200 || \
+	"${vm_profile}" == h200 ]]
 
 ssh \
 	-i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
@@ -44,7 +44,7 @@ ssh \
 		"${release_line}" \
 		"${source_commit}" \
 		"${tests_commit}" \
-		"${atf_profile}" <<'REMOTE'
+		"${vm_profile}" <<'REMOTE'
 set -euo pipefail
 phase="$1"
 root="$2"
@@ -52,7 +52,7 @@ run_id="$3"
 release_line="$4"
 source_commit="$5"
 tests_commit="$6"
-atf_profile="$7"
+vm_profile="$7"
 source_dir="${root}/source"
 tests_dir="${root}/tests"
 infra_dir="${root}/external-infra/slurm-atf/infra"
@@ -75,7 +75,7 @@ set +e
 	"${release_line}" \
 	"${source_commit}" \
 	"${tests_commit}" \
-	"${atf_profile}" \
+	"${vm_profile}" \
 	2>&1 | tee "${root}/orchestration-${phase}.log"
 status=${PIPESTATUS[0]}
 set -e

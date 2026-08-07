@@ -51,5 +51,10 @@ The resulting image must be `READY`, `AMD64`, and recommend
 `atf_profile=h200`, and configure the `e2e` environment VM profile as described
 in the repository documentation.
 
+Here `atf_profile=h200` selects and validates the physical VM. The full
+Expect/Python suite deliberately runs a four-CPU, hardware-neutral `generic`
+Slurm configuration inside that VM so ATF can create synthetic nodes without
+cloning physical H200 GRES. Real-GPU checks should use a separate smoke/shard.
+
 No GPU cluster is needed for this single-VM ATF image build. The exact image
 ID is recorded by the baseline workflow and inherited by candidate runs.

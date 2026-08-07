@@ -20,6 +20,7 @@ on:
         default: computeimage-e00sphs75y9ej9nw9j
         type: string
       atf_profile:
+        description: VM hardware profile; the full ATF cluster stays generic
         required: false
         default: generic
         type: string
@@ -149,34 +150,11 @@ jobs:
         run: |
           set -euo pipefail
           configure_script=external-infra/slurm-atf/infra/configure-atf.sh
-          generic_config=external-infra/slurm-atf/infra/config/slurm-generic.conf
-          config_dir=external-infra/slurm-atf/infra/config
           expected='sudo "${root}/venv/bin/pip" install -r "${script_dir}/requirements.lock"'
           grep -Fxq "${expected}" "${configure_script}"
           sed -i \
             's|sudo "${root}/venv/bin/pip" install -r "${script_dir}/requirements.lock"|sudo "${root}/venv/bin/pip" check|' \
             "${configure_script}"
-
-          generic_node='NodeName=node0 NodeAddr=127.0.0.1 Port=7001 CPUs=4 RealMemory=32768 State=UNKNOWN'
-          grep -Fxq "${generic_node}" "${generic_config}"
-          sed -i \
-            's|Port=7001 CPUs=4 RealMemory=32768|Port=7001 CPUs=1 RealMemory=32768|' \
-            "${generic_config}"
-
-          if [[ "${{ inputs.atf_profile }}" == h200 ]]; then
-            profile_case='generic | b200) ;;'
-            profile_error='echo "Unsupported SLURM_ATF_PROFILE=${profile}; use generic or b200" >&2'
-            grep -Fq "${profile_case}" "${configure_script}"
-            grep -Fq "${profile_error}" "${configure_script}"
-            sed -i \
-              -e 's#generic | b200) ;;#generic | b200 | h200) ;;#' \
-              -e 's#use generic or b200#use generic, b200, or h200#' \
-              "${configure_script}"
-            install -m 0644 tests/nebius/ci/atf/config/slurm-h200.conf \
-              "${config_dir}/slurm-h200.conf"
-            install -m 0644 tests/nebius/ci/atf/config/gres-h200.conf \
-              "${config_dir}/gres-h200.conf"
-          fi
 
       - name: Install yq
         uses: frenck/action-setup-yq@c4b5be8b4a215c536a41d436757d9feb92836d4f # v1.0.2
@@ -257,6 +235,8 @@ jobs:
             echo "- Infrastructure: \`${ATF_INFRA_COMMIT}\`"
             echo "- Image: \`${NEBIUS_VM_IMAGE_ID}\`"
             echo "- Shape: \`${vm_shape}\`"
+            echo "- VM hardware profile: \`${{ inputs.atf_profile }}\`"
+            echo "- Full-suite cluster profile: \`generic\`"
             echo "- Phase 1: build + Expect wrappers"
             echo "- Phase 2: Python tests on the same VM"
           } >>"${GITHUB_STEP_SUMMARY}"
@@ -632,8 +612,9 @@ jobs:
             "${{ needs.expect.outputs.source_commit }}"
           test "$(jq -er '.tests.master_commit' atf-result/run-manifest.json)" = \
             "${{ needs.expect.outputs.tests_commit }}"
-          test "$(jq -er '.atf.profile' atf-result/run-manifest.json)" = \
+          test "$(jq -er '.atf.vm_profile' atf-result/run-manifest.json)" = \
             "${{ inputs.atf_profile }}"
+          test "$(jq -er '.atf.profile' atf-result/run-manifest.json)" = generic
           jq -e '.schema == 1' atf-result/image-metadata.json >/dev/null
           junit_sha256="$(sha256sum atf-result/junit.xml | awk '{print $1}')"
           artifact_name="slurm-atf-${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"

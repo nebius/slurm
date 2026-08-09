@@ -10,7 +10,6 @@ from pathlib import Path
 
 
 GPU_REQUIRED = {
-    "expect/test_39_9.py",
     "expect/test_40_8.py",
 }
 

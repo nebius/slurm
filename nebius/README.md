@@ -383,10 +383,11 @@ configure a hardware-neutral `generic` Slurm node with four synthetic CPUs.
 ATF clones and reshapes that node for individual tests; cloning the physical
 128-CPU, eight-GPU node would make synthetic `slurmd` instances invalid because
 NVML devices exist only for `node0`. The base `gres.conf` therefore remains
-empty even on the GPU shard. The pinned `expect/test_39_9.py` module temporarily
-sets `NodeName=node0 AutoDetect=nvml` through ATF, and module teardown restores
-the empty base before another test starts. The shard also exposes the real H200
-devices, CUDA compiler, and NVML libraries to tests that invoke them directly.
+empty even on the GPU shard. The upstream-skipped `expect/test_39_9.py` remains
+skipped because H200 does not provide all memory-clock controls assumed by the
+legacy `srun --gpu-freq` test. The GPU shard still exposes the real H200 devices,
+CUDA compiler, and NVML libraries to supported tests such as
+`expect/test_40_8.py`.
 
 Build and version that image using the repository-owned
 [`nebius/ci/images/slurm-atf-h200`](ci/images/slurm-atf-h200/README.md)

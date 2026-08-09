@@ -160,8 +160,13 @@ jobs:
           test "$(jq -er '.sharding.algorithm' baseline-evidence/run-metadata.json)" = \
             balanced-hash-v1
           test "$(jq -er '.sharding.shards | length' baseline-evidence/run-metadata.json)" = 5
+          pytest_status="$(<baseline-evidence/pytest-exit-status)"
           test "$(jq -er '.result.pytest_exit_status' baseline-evidence/run-metadata.json)" = \
-            "$(<baseline-evidence/pytest-exit-status)"
+            "${pytest_status}"
+          if [[ "${pytest_status}" != 0 ]]; then
+            echo "Refusing to publish a baseline with pytest exit status ${pytest_status}" >&2
+            exit 1
+          fi
           test "$(jq -er '.result.junit_sha256' baseline-evidence/run-metadata.json)" = \
             "$(sha256sum baseline-evidence/junit.xml | awk '{print $1}')"
 

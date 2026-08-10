@@ -66,6 +66,22 @@ def block_of(node_list_expression):
     return blocks.pop()
 
 
+def assert_node_topology(node, expected, timeout=10):
+    """Wait until the controller reports the expected topology for a node."""
+
+    matches = atf.repeat_until(
+        lambda: atf.get_node_parameter(node, "topology"),
+        lambda topology: topology == expected,
+        timeout=timeout,
+        fatal=False,
+    )
+    if not matches:
+        pytest.fail(
+            f"Node {node} should report Topology={expected}, got "
+            f"{atf.get_node_parameter(node, 'topology')!r}"
+        )
+
+
 def test_redundant_topology_update_keeps_block_scheduling():
     """Verify block placement survives re-applying an unchanged topology."""
 
@@ -81,9 +97,7 @@ def test_redundant_topology_update_keeps_block_scheduling():
 
     for block, nodes in BLOCKS.items():
         for node in atf.node_range_to_list(nodes):
-            assert (
-                atf.get_node_parameter(node, "Topology") == f"default:{block}"
-            ), f"Node {node} should report Topology=default:{block}"
+            assert_node_topology(node, f"default:{block}")
 
     # Two exclusive jobs that each fit in a block. With the aggregate bitmap
     # corrupted the generic node evaluation runs instead and lets an

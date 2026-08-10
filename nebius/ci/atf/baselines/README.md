@@ -17,4 +17,6 @@ and review.
 Patch comparison workflows read this file from the release branch. This pins
 the baseline evidence, source and common-test commit, ATF infrastructure, CPU
 and GPU images and shapes, plus the five-shard assignment used for every later
-patch.
+patch. Tests added or changed by a later patch do not alter that assignment:
+they run separately on the already allocated H200 shard and every collected
+testcase must pass.

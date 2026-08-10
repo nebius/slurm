@@ -19,7 +19,7 @@ Actions workflow files from `master` into a newly created
 This is always the first pull request for a new downstream release:
 
 ```sh
-git switch -c patch/NB-0001-sync-docs-and-tests origin/nebius/26.05
+git switch -c 26.05/patch/NB-0001-sync-docs-and-tests origin/nebius/26.05
 ```
 
 ## Motivation

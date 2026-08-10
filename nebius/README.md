@@ -97,7 +97,7 @@ documentation and tests from `master`:
 
 ```sh
 git fetch origin
-git switch -c patch/NB-0001-sync-docs-and-tests origin/nebius/26.05
+git switch -c 26.05/patch/NB-0001-sync-docs-and-tests origin/nebius/26.05
 ```
 
 Bring the applicable documentation, test suite, and CI workflow files from
@@ -124,10 +124,12 @@ immutable release tag to `nebius/ci/atf/baselines/26.05.txt` in the same pull
 request. The detailed procedure is in
 [Full ATF baseline and patch comparison](#full-atf-baseline-and-patch-comparison).
 
-After `NB-0001` is merged, create each remaining `patch/NB-*` branch from the
-updated `origin/nebius/26.05`. Apply patches in the order recorded in
+After `NB-0001` is merged, create each remaining `<release>/patch/NB-*` branch
+from the updated `origin/nebius/26.05`. Apply patches in the order recorded in
 `PATCHES.md` and submit each logical change through a separate reviewed pull
-request.
+request. The release prefix makes the target line explicit and lets CI reject
+a branch whose version does not match its `nebius/<release>` pull-request
+target.
 
 Repeat the same process when a new upstream release appears, substituting its
 version in every branch name:
@@ -174,9 +176,9 @@ git merge origin/slurm-26.05
 git push -u origin sync/26.05-YYYYMMDD
 ```
 
-Never sync upstream directly into an active `patch/NB-*` development branch.
-Update the downstream release first, then rebase or recreate the development
-branch on the reviewed result.
+Never sync upstream directly into an active `<release>/patch/NB-*` development
+branch. Update the downstream release first, then rebase or recreate the
+development branch on the reviewed result.
 
 ## Patch organization
 
@@ -211,7 +213,7 @@ even when some files or conflict resolutions differ.
 Start work from the downstream branch for the target release:
 
 ```sh
-git switch -c patch/NB-0002-short-description origin/nebius/26.05
+git switch -c 26.05/patch/NB-0002-short-description origin/nebius/26.05
 ```
 
 Submit the branch as a pull request into `nebius/26.05`. Keep unrelated
@@ -537,12 +539,12 @@ or misleading.
 
 #### Creating the baseline in `NB-0001`
 
-Push `patch/NB-0001-sync-docs-and-tests`, then run the baseline workflow on
-that exact ref:
+Push `26.05/patch/NB-0001-sync-docs-and-tests`, then run the baseline workflow
+on that exact ref:
 
 ```sh
 gh workflow run slurm-atf-baseline.yml \
-  --ref patch/NB-0001-sync-docs-and-tests \
+  --ref 26.05/patch/NB-0001-sync-docs-and-tests \
   -f release_line=26.05 \
   -f upstream_branch=slurm-26.05 \
   -f cpu_image_id=computeimage-e00sphs75y9ej9nw9j \
@@ -562,9 +564,17 @@ pointer file `nebius/ci/atf/baselines/26.05.txt`:
 slurm-atf-baseline-26.05-<64-character-baseline-key>
 ```
 
-Commit that pointer to `NB-0001` before merging it. The release contains the
-JUnit report, pytest and daemon logs, generated configuration, package and VM
-metadata, and SHA256 checksums. An existing tag is never overwritten.
+Commit that pointer to `NB-0001` before merging it. On this bootstrap PR the
+target release does not have a pointer yet, so the candidate workflow accepts
+the pointer from the PR only when its branch matches
+`<release>/patch/NB-0001-<description>` and the branch release matches the
+`nebius/<release>` target. It fully validates the immutable release but skips
+the redundant five-VM candidate rerun. Later patch PRs must use the pointer
+already merged into the target release and cannot replace it.
+
+The release contains the JUnit report, pytest and daemon logs, generated
+configuration, package and VM metadata, and SHA256 checksums. An existing tag
+is never overwritten.
 This also works with squash merging: the release tag keeps the pre-merge test
 commit reachable, while later candidates are tied to the recorded clean
 `slurm-<release>` ancestor rather than to a particular merge strategy.
@@ -577,9 +587,11 @@ additionally locks the published tag and assets against later manual changes.
 
 #### Testing later patches
 
-Pull requests targeting `nebius/**` run the patch comparison automatically.
-The workflow reads the pointer specifically from the target release branch
-(a patch cannot replace its own comparison input), verifies the
+Pull requests targeting `nebius/**` run the patch comparison automatically and
+must use a `<release>/patch/<description>` source branch matching the target
+release. Except for the explicitly validated `NB-0001` bootstrap described
+above, the workflow reads the pointer specifically from the target release
+branch (a patch cannot replace its own comparison input), verifies the
 baseline archive and provenance, and uses the baseline's exact test commit,
 ATF infrastructure commit, two images, CPU/GPU VM shapes, and five-shard
 assignment manifest.
@@ -588,7 +600,7 @@ A manual rerun normally needs only the release ref; it reads the same pointer:
 
 ```sh
 gh workflow run slurm-atf-candidate.yml \
-  --ref patch/NB-0002-short-description \
+  --ref 26.05/patch/NB-0002-short-description \
   -f release_line=26.05 \
   -f nebius_cli_profile=default \
   -f keep_vm_on_failure=false

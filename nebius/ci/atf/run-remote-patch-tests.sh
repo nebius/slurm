@@ -147,7 +147,11 @@ fi
 sudo find "${install_dir}/etc" -maxdepth 1 -type f -name '*.conf' \
 	-exec cp -p {} "${patch_run_dir}/config/" \;
 sudo chown -R atf:atf "${patch_run_dir}/daemon-logs" "${patch_run_dir}/config"
-rsync -a --delete "${patch_run_dir}/" "${output_dir}/"
+# Some daemon logs and configuration files intentionally remain mode 0600.
+# Copy them with privilege, then hand the exported evidence back to the SSH
+# user so that the following scp step can download every file.
+sudo rsync -a --delete "${patch_run_dir}/" "${output_dir}/"
+sudo chown -R "$(id -u):$(id -g)" "${output_dir}"
 
 if [[ "${status}" != 0 && "${status}" != 1 ]]; then
 	echo "Patch tests did not complete normally (exit status ${status})" >&2

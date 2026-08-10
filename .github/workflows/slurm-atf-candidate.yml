@@ -46,6 +46,7 @@ jobs:
       gpu_image_id: ${{ steps.baseline.outputs.gpu_image_id }}
       cpu_vm_shape: ${{ steps.baseline.outputs.cpu_vm_shape }}
       gpu_vm_shape: ${{ steps.baseline.outputs.gpu_vm_shape }}
+      comparison_required: ${{ steps.baseline.outputs.comparison_required }}
     steps:
       - name: Checkout the candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,9 +71,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          fail() {
+            echo "::error::$*" >&2
+            exit 1
+          }
+          comparison_required=true
+          branch_description=""
           if [[ "${GITHUB_EVENT_NAME}" == pull_request ]]; then
             release_line="${GITHUB_BASE_REF#nebius/}"
-            test "${release_line}" != "${GITHUB_BASE_REF}"
+            if [[ "${release_line}" == "${GITHUB_BASE_REF}" ]]; then
+              fail "Target branch must match nebius/<release>"
+            fi
+            if [[ ! "${GITHUB_HEAD_REF}" =~ ^([0-9]+\.[0-9]+)/patch/([A-Za-z0-9][A-Za-z0-9._-]*)$ ]]; then
+              fail "Patch branch must match <release>/patch/<description>"
+            fi
+            if [[ "${BASH_REMATCH[1]}" != "${release_line}" ]]; then
+              fail "Patch branch release ${BASH_REMATCH[1]} does not match target ${release_line}"
+            fi
+            branch_description="${BASH_REMATCH[2]}"
           else
             release_line="${DISPATCH_RELEASE_LINE}"
           fi
@@ -82,10 +98,28 @@ jobs:
           baseline_tag="${DISPATCH_BASELINE_TAG}"
           if [[ -z "${baseline_tag}" ]]; then
             if [[ "${GITHUB_EVENT_NAME}" == pull_request ]]; then
-              test -s "target-release/${pointer}"
-              baseline_tag="$(<"target-release/${pointer}")"
+              if [[ -s "target-release/${pointer}" ]]; then
+                baseline_tag="$(<"target-release/${pointer}")"
+                if [[ ! -s "${pointer}" ]]; then
+                  fail "Candidate is missing the target release baseline pointer ${pointer}"
+                fi
+                if [[ "$(<"${pointer}")" != "${baseline_tag}" ]]; then
+                  fail "A patch cannot replace the target release baseline pointer"
+                fi
+              else
+                if [[ ! "${branch_description}" =~ ^NB-0001-[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+                  fail "Only NB-0001 may bootstrap a missing release baseline pointer"
+                fi
+                if [[ ! -s "${pointer}" ]]; then
+                  fail "NB-0001 must add ${pointer} before it can merge"
+                fi
+                baseline_tag="$(<"${pointer}")"
+                comparison_required=false
+              fi
             else
-              test -s "${pointer}"
+              if [[ ! -s "${pointer}" ]]; then
+                fail "Missing release baseline pointer ${pointer}"
+              fi
               baseline_tag="$(<"${pointer}")"
             fi
           fi
@@ -142,6 +176,9 @@ jobs:
           test "$(jq -er '.result.junit_sha256' baseline-evidence/run-metadata.json)" = \
             "$(sha256sum baseline-evidence/junit.xml | awk '{print $1}')"
           git merge-base --is-ancestor "${upstream_commit}" HEAD
+          if [[ "${comparison_required}" == false ]]; then
+            git merge-base --is-ancestor "${baseline_source}" HEAD
+          fi
 
           {
             echo "baseline_tag=${baseline_tag}"
@@ -151,6 +188,7 @@ jobs:
             echo "gpu_image_id=${gpu_image_id}"
             echo "cpu_vm_shape=${cpu_vm_shape}"
             echo "gpu_vm_shape=${gpu_vm_shape}"
+            echo "comparison_required=${comparison_required}"
           } >>"${GITHUB_OUTPUT}"
           {
             echo "### Patch comparison input"
@@ -162,11 +200,13 @@ jobs:
             echo "- CPU shards: \`4 x ${cpu_vm_shape}\` using \`${cpu_image_id}\`"
             echo "- GPU shard: \`1 x ${gpu_vm_shape}\` using \`${gpu_image_id}\`"
             echo "- Candidate: \`$(git rev-parse HEAD)\`"
+            echo "- Full comparison required: \`${comparison_required}\`"
           } >>"${GITHUB_STEP_SUMMARY}"
 
   run:
     name: Run the candidate suite
     needs: prepare
+    if: needs.prepare.outputs.comparison_required == 'true'
     uses: ./.github/workflows/_slurm-atf-sharded-run.yml
     with:
       run_kind: candidate
@@ -185,6 +225,7 @@ jobs:
     needs:
       - prepare
       - run
+    if: needs.prepare.outputs.comparison_required == 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout the pinned comparison tool

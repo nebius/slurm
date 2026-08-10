@@ -830,6 +830,7 @@ static bool _is_dup_config_record(config_record_t *c1, config_record_t *c2)
 		return false; /* This is the same pointer - ignore */
 
 	if ((c1->boards == c2->boards) &&
+	    (c1->auto_resume == c2->auto_resume) &&
 	    (c1->core_spec_cnt == c2->core_spec_cnt) &&
 	    (c1->cores == c2->cores) &&
 	    (c1->cpu_bind == c2->cpu_bind) &&
@@ -2554,6 +2555,7 @@ config_record_t *_dup_config(config_record_t *config_ptr)
 
 	new_config_ptr = create_config_record();
 	new_config_ptr->magic       = config_ptr->magic;
+	new_config_ptr->auto_resume = config_ptr->auto_resume;
 	new_config_ptr->cpus        = config_ptr->cpus;
 	new_config_ptr->cpu_spec_list = xstrdup(config_ptr->cpu_spec_list);
 	new_config_ptr->boards      = config_ptr->boards;
@@ -4434,6 +4436,9 @@ extern void make_node_alloc(node_record_t *node_ptr, job_record_t *job_ptr)
 extern void make_node_avail(node_record_t *node_ptr)
 {
 	if (IS_NODE_POWER_DOWN(node_ptr) || IS_NODE_POWERING_DOWN(node_ptr))
+		return;
+	if (IS_NODE_POWERED_DOWN(node_ptr) &&
+	    node_ptr->config_ptr && !node_ptr->config_ptr->auto_resume)
 		return;
 	bit_set(avail_node_bitmap, node_ptr->index);
 

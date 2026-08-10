@@ -542,6 +542,7 @@ static int _parse_nodename(void **dest, slurm_parser_enum_t type,
 	s_p_hashtbl_t *tbl, *dflt;
 	slurm_conf_node_t *n;
 	static s_p_options_t _nodename_options[] = {
+		{"AutoResume", S_P_BOOLEAN},
 		{"BcastAddr", S_P_STRING},
 		{"Boards", S_P_UINT16},
 		{"CoreSpecCount", S_P_UINT16},
@@ -623,6 +624,9 @@ static int _parse_nodename(void **dest, slurm_parser_enum_t type,
 		dflt = default_nodename_tbl;
 
 		n->nodenames = xstrdup(value);
+
+		if (!s_p_get_boolean(&n->auto_resume, "AutoResume", tbl))
+			s_p_get_boolean(&n->auto_resume, "AutoResume", dflt);
 
 		if (!s_p_get_string(&n->hostnames, "NodeHostname", tbl))
 			n->hostnames = xstrdup(n->nodenames);
@@ -907,6 +911,7 @@ unpack_error:
  */
 static void _init_conf_node(slurm_conf_node_t *conf_node)
 {
+	conf_node->auto_resume = true;
 	conf_node->boards = 1;
 	conf_node->cores = 1;
 	conf_node->cpus = 1;

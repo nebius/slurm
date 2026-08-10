@@ -183,6 +183,7 @@ typedef struct node_record node_record_t;
 
 typedef struct slurm_conf_node {
 	char *nodenames;
+	bool auto_resume;	/* allow scheduler-triggered power up */
 	char *hostnames;
 	char *addresses;
 	char *bcast_addresses;

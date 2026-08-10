@@ -199,10 +199,11 @@ def test_reboot_nodes_forwards_power_action(nodes, admin_headers):
         {"nodes": nodes[0], "power_action": "not-configured"},
         admin_headers,
     )
-    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, response.text
+    assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR, response.text
     response = response.json()
     assert response["errors"]
     error = response["errors"][0]
+    assert error["error_number"] == 2187
     assert "Invalid power action" in (
         f"{error.get('error', '')} {error.get('description', '')}"
     )

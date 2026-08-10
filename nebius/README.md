@@ -520,15 +520,33 @@ The user-facing workflows intentionally separate two operations:
 2. [`Slurm ATF patch comparison`](../.github/workflows/slurm-atf-candidate.yml)
    builds a later patch but checks out the common tests from the exact
    baseline commit. It compares every JUnit testcase with the published
-   vanilla result.
+   vanilla result. After the common suite, the existing H200 shard also runs
+   tests added or changed by the patch from the candidate tree.
 
 The baseline run may contain failures already present in the vanilla release.
 Its raw pytest exit status is recorded rather than used as the gate. A patch
 passes when every common testcase either keeps its baseline outcome or
-improves to `passed`, no baseline test disappears, and any candidate-only
-testcase passes. Changing a known failure into a skip or another failure mode
-still fails the comparison; a patch cannot hide it by skipping or removing
-the test.
+improves to `passed` and no baseline test disappears. The separate
+patch-specific gate requires every testcase collected from a new or modified
+test file to be `passed`; failed, errored, skipped, and xfailed outcomes all
+fail this gate. Changing a known common failure into a skip or another failure
+mode still fails the comparison, and a patch may not remove a frozen baseline
+test file.
+
+Patch-specific tests run after the common Expect and Python phases on the same
+8xH200 VM, so they do not allocate a sixth machine or change the immutable
+five-shard baseline assignment. CI selects top-level `test_*.py` files added
+or modified below `testsuite/python/expect/` and
+`testsuite/python/tests/`. Changing a raw `testsuite/expect/testN.M` program
+also selects its `expect/test_N_M.py` wrapper. The complete candidate test
+tree is used for this phase, including candidate helper changes, while the
+source under test remains the already built candidate commit.
+
+Prefer adding a new test file for each product patch. Modifying an existing
+file reruns that whole file under the stricter all-passed policy, so any
+pre-existing skip or xfail in it will reject the patch-specific gate. A patch
+that changes only shared test support must also add or modify a runnable test;
+otherwise CI refuses the change rather than silently leaving it uncovered.
 
 Only stable assertion-level failures caused by the vanilla Slurm source are
 acceptable baseline outcomes. Harness setup errors, order-dependent failures,
@@ -614,8 +632,12 @@ Candidate runs also inherit both image IDs and the exact CPU/GPU VM shapes
 from that immutable baseline. The comparison requires the same sharding
 algorithm and inventories. A changed GitHub environment profile therefore
 fails during VM validation instead of producing an invalid multi-hour
-comparison.
+comparison. Patch-specific tests are deliberately outside that inventory:
+their selection and JUnit report are stored separately and must be fully
+passing.
 
-After a comparison, two 30-day Actions artifacts are available: the complete
-candidate evidence and a smaller A/B report in Markdown and JSON. The vanilla
-evidence remains permanently available from its GitHub Release.
+After a comparison, three 30-day Actions artifacts are available: the complete
+candidate evidence, the patch-specific H200 evidence (including an empty
+selection when the patch has no tests), and a smaller A/B report in Markdown
+and JSON. The vanilla evidence remains permanently available from its GitHub
+Release.

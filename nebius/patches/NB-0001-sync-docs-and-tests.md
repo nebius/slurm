@@ -72,6 +72,9 @@ tests must be explicit in the pull request and kept to the minimum necessary.
 - A candidate run using the same tests produces no regressed or missing common
   testcase outcomes; changes from a vanilla failure to `passed` are reported
   as improvements.
+- New or modified tests belonging to a later patch run separately on the H200
+  shard and every collected testcase passes; the patch cannot remove a frozen
+  baseline test file.
 - Any skipped, adapted, or excluded master tests are documented in the pull
   request.
 - CI runs for pull requests targeting the release branch and for the intended

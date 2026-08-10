@@ -43,6 +43,18 @@ def write_junit(path: Path, cases: list[tuple[str, str]]) -> None:
 
 
 class PatchTests(unittest.TestCase):
+    def test_remote_evidence_export_is_readable_by_ssh_user(self) -> None:
+        script = (Path(__file__).parent / "run-remote-patch-tests.sh").read_text()
+        privileged_copy = (
+            'sudo rsync -a --delete "${patch_run_dir}/" "${output_dir}/"'
+        )
+        ownership_handoff = (
+            'sudo chown -R "$(id -u):$(id -g)" "${output_dir}"'
+        )
+        self.assertIn(privileged_copy, script)
+        self.assertIn(ownership_handoff, script)
+        self.assertLess(script.index(privileged_copy), script.index(ownership_handoff))
+
     def test_selects_added_and_modified_runnable_files(self) -> None:
         with tempfile.TemporaryDirectory() as root:
             root_path = Path(root)

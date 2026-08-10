@@ -210,9 +210,11 @@ even when some files or conflict resolutions differ.
 
 ## Developing a patch
 
-Start work from the downstream branch for the target release:
+Fetch the fork and start work from the current downstream branch for the
+target release:
 
 ```sh
+git fetch origin
 git switch -c 26.05/patch/NB-0002-short-description origin/nebius/26.05
 ```
 
@@ -220,9 +222,86 @@ Submit the branch as a pull request into `nebius/26.05`. Keep unrelated
 changes in separate patches. Avoid merge commits in the downstream patch
 queue so individual changes can be ported, reordered, or dropped.
 
+Create the next patch branch only after its dependencies have been merged and
+the local `origin/nebius/26.05` tracking ref has been refreshed. For example,
+after `NB-0002` is merged:
+
+```sh
+git fetch origin
+git switch -c 26.05/patch/NB-0003-next-change origin/nebius/26.05
+```
+
+Do not normally create `NB-0003` from an unmerged `NB-0002` branch. That
+turns the pull requests into an implicit stack and makes the second diff
+contain both patches. If parallel development is necessary, start both
+branches from `origin/nebius/<release>`, declare the dependency in
+`PATCHES.md`, then rebase or recreate the dependent branch after the first
+patch merges.
+
+Before opening the pull request, verify the branch relationship and target:
+
+```sh
+git merge-base --is-ancestor origin/nebius/26.05 HEAD
+git log --oneline origin/nebius/26.05..HEAD
+```
+
+The source branch must match `<release>/patch/<description>`, normally with a
+stable patch ID such as `26.05/patch/NB-0002-short-description`, and the pull
+request must target `nebius/<release>`. CI rejects a release prefix that does
+not match the target branch.
+
 If a change is intended for SchedMD, develop or reproduce it on a branch based
 on the clean upstream release branch. This prevents other Nebius changes from
 leaking into the upstream pull request.
+
+### Stamping the Nebius release version
+
+Keep `NB-0001` limited to documentation, tests, and CI. In particular, do not
+change `META` there: the vanilla baseline workflow treats it as a product file
+and rejects it at the baseline boundary.
+
+Add the Nebius version stamp as a separate downstream patch immediately after
+`NB-0001`, before patches that change Slurm behavior. Create it from the
+updated release branch in the same way as any other patch. Allocate its stable
+`NB-*` identifier, add it to `PATCHES.md`, and create its specification from
+`nebius/patches/TEMPLATE.md`:
+
+```sh
+git fetch origin
+git switch -c \
+  26.05/patch/NB-XXXX-nebius-release-version \
+  origin/nebius/26.05
+```
+
+In that branch, preserve the SchedMD `Major`, `Minor`, `Micro`, and `Version`
+values in `META` and set only its downstream `Release` value. For example:
+
+```text
+  Major:       26
+  Minor:       05
+  Micro:       3
+  Version:     26.05.3
+  Release:     nebius-1
+```
+
+The normal `configure` step reads `META` directly, so a clean rebuild then
+reports `slurm 26.05.3-nebius-1` from `sinfo --version`, `slurmctld -V`, and
+the other Slurm binaries. Do not edit the generated version macros or hard-code
+the suffix in individual commands.
+
+Treat the final number as the Nebius build revision for one SchedMD patch
+version. If the same `26.05.3` source needs another downstream release, bump
+it to `nebius-2`. When SchedMD updates the branch to `26.05.4`, take its new
+`Micro` and `Version` values and start that upstream version at `nebius-1`.
+An upstream sync will commonly touch `META`, so resolving this small conflict
+is an explicit part of refreshing the version-stamp patch.
+
+RPM and Debian package versions must express the same downstream revision in
+their own metadata (`slurm.spec` and `debian/changelog`), but their version
+grammars are not identical to the runtime string. Update and validate those
+files in the packaging workflow instead of blindly copying `nebius-1` into
+every package field. The `META` change alone is sufficient for source builds
+and the version printed by Slurm binaries.
 
 ## Porting to a new Slurm release
 

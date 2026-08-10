@@ -56,7 +56,8 @@ Not included:
   no equivalent aggregate bitmap;
 - any change to the operator-side workaround of not re-applying an unchanged
   topology, which remains valid and independent of this patch;
-- new test coverage; see Validation.
+- coverage of the `blocks_nodes_cnt` recount, which only shifts the
+  fragmentation score and has no directly observable output.
 
 ## Porting notes
 
@@ -74,6 +75,18 @@ Not included:
 
 ## Validation
 
+- `testsuite/python/tests/test_nb_0002_topology_block.py` is the regression
+  test. On an eight-node `topology/block` cluster with `BlockName=b1
+  Nodes=node[1-4]`, `BlockName=b2 Nodes=node[5-8]`, and `BlockSizes=4,8`, it
+  re-applies to every node the block it already belongs to, then requires that
+  a two-node and a three-node exclusive job still land in separate blocks and
+  that a further three-node job stays pending instead of spanning both blocks.
+  Without the fix the aggregate bitmap is empty after the redundant update,
+  the generic node evaluation replaces `eval_nodes_block()`, and both
+  assertions fail. It carries the patch identifier rather than an upstream
+  `test_<group>_<n>.py` number so ports cannot collide with a future SchedMD
+  test.
+- Manual checks below remain useful on a real cluster.
 - `topology/block` cluster with more than one block, `topology.conf`
   enumerating every worker.
 - Re-apply an unchanged topology to a node
@@ -87,9 +100,6 @@ Not included:
   code path.
 - `scontrol show topology` must stay unchanged throughout, since it renders
   from the per-block bitmaps that the bug never corrupted.
-- Not yet covered by an automated test. A regression test asserting that a
-  redundant topology update preserves segment placement would belong in the
-  ATF suite.
 
 ## History
 

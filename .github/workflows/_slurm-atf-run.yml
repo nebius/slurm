@@ -717,11 +717,321 @@ jobs:
           echo "Python ATF phase did not produce valid complete evidence; inspect the uploaded artifact." >&2
           exit 1
 
+  patch_tests:
+    name: Run patch-specific tests on H200
+    needs:
+      - expect
+      - pytest
+    if: >-
+      inputs.run_kind == 'candidate' &&
+      inputs.atf_profile == 'h200' &&
+      inputs.shard_id == 'gpu'
+    runs-on: ubuntu-24.04
+    environment: e2e
+    timeout-minutes: 300
+    env:
+      ATF_CLOUD_PROFILE: ${{ vars.SLURM_ATF_H200_PROFILE }}
+      NEBIUS_CLI_VERSION: 0.12.253
+      NEBIUS_CLI_PROFILE: ${{ inputs.nebius_cli_profile }}
+      NEBIUS_VM_IMAGE_ID: ${{ inputs.image_id }}
+      NEBIUS_VM_ID: ${{ needs.expect.outputs.vm_id }}
+      NEBIUS_VM_PUBLIC_IP: ${{ needs.expect.outputs.public_ip }}
+      SLURM_ATF_SSH_USER: ${{ needs.expect.outputs.ssh_user }}
+
+    steps:
+      - name: Initialize patch-test evidence
+        run: |
+          set -euo pipefail
+          mkdir -p patch-result
+          jq -n \
+            --arg event_name "${GITHUB_EVENT_NAME}" \
+            --arg ref "${GITHUB_REF}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            '{
+              schema: 1,
+              phase: "patch-tests",
+              event_name: $event_name,
+              ref: $ref,
+              repository: $repository,
+              run_id: $run_id,
+              run_attempt: $run_attempt
+            }' >patch-result/workflow-context.json
+
+      - name: Checkout the candidate test tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout the frozen baseline test tree
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tests_ref }}
+          path: baseline-tests
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout trusted patch-test CI tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          path: ci-tools
+          fetch-depth: 1
+          persist-credentials: false
+
+      - id: selection
+        name: Select tests added or changed by the patch
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = \
+            "${{ needs.expect.outputs.source_commit }}"
+          test "$(git -C baseline-tests rev-parse HEAD)" = \
+            "${{ needs.expect.outputs.tests_commit }}"
+          count="$(python3 ci-tools/nebius/ci/atf/select_patch_tests.py \
+            candidate \
+            baseline-tests \
+            patch-result/selection.json)"
+          [[ "${count}" =~ ^[0-9]+$ ]]
+          echo "count=${count}" >>"${GITHUB_OUTPUT}"
+          {
+            echo "### Patch-specific test selection"
+            echo
+            echo "- Policy: \`changed-files-on-h200-v1\`"
+            echo "- Frozen tests: \`${{ needs.expect.outputs.tests_commit }}\`"
+            echo "- Candidate: \`${{ needs.expect.outputs.source_commit }}\`"
+            echo "- Selected files: \`${count}\`"
+            echo "- Execution VM: the existing \`gpu\` shard (H200)"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - if: steps.selection.outcome == 'success' && steps.selection.outputs.count != '0'
+        name: Install yq
+        uses: frenck/action-setup-yq@c4b5be8b4a215c536a41d436757d9feb92836d4f # v1.0.2
+        with:
+          version: v4.44.6
+
+      - if: steps.selection.outcome == 'success' && steps.selection.outputs.count != '0'
+        name: Install Nebius CLI
+        env:
+          NEBIUS_INSTALL_FOLDER: ${{ github.workspace }}/bin
+        run: |
+          set -euo pipefail
+          mkdir -p "${NEBIUS_INSTALL_FOLDER}"
+          curl -sSL https://storage.eu-north1.nebius.cloud/cli/install.sh | bash
+          echo "${NEBIUS_INSTALL_FOLDER}" >>"${GITHUB_PATH}"
+
+      - if: steps.selection.outcome == 'success' && steps.selection.outputs.count != '0'
+        name: Configure Nebius CLI
+        env:
+          NEBIUS_CLI_CONFIG: ${{ vars.NEBIUS_CLI_CONFIG }}
+          NEBIUS_PRIVATE_KEY: ${{ secrets.NEBIUS_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${ATF_CLOUD_PROFILE}"
+          test -n "${NEBIUS_CLI_CONFIG}"
+          test -n "${NEBIUS_PRIVATE_KEY}"
+          mkdir -p "${HOME}/.nebius"
+          printf '%s\n' "${NEBIUS_CLI_CONFIG}" >"${HOME}/.nebius/config.yaml"
+          yq -e '.profiles[strenv(NEBIUS_CLI_PROFILE)] != null' \
+            "${HOME}/.nebius/config.yaml" >/dev/null
+          yq -i \
+            '.profiles[strenv(NEBIUS_CLI_PROFILE)]["private-key"] = strenv(NEBIUS_PRIVATE_KEY)' \
+            "${HOME}/.nebius/config.yaml"
+          chmod 600 "${HOME}/.nebius/config.yaml"
+
+      - id: restore_ssh
+        if: steps.selection.outcome == 'success' && steps.selection.outputs.count != '0'
+        name: Restore the pinned H200 SSH identity
+        env:
+          KNOWN_HOSTS_B64: ${{ needs.expect.outputs.known_hosts_b64 }}
+          SSH_PRIVATE_KEY: ${{ secrets.SLURM_ATF_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${SSH_PRIVATE_KEY}"
+          test -n "${KNOWN_HOSTS_B64}"
+          private_key_file="${RUNNER_TEMP}/slurm-atf-ssh-key"
+          known_hosts_file="${RUNNER_TEMP}/slurm-atf-known-hosts"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" | tr -d '\r' >"${private_key_file}"
+          chmod 600 "${private_key_file}"
+          printf '%s' "${KNOWN_HOSTS_B64}" | base64 -d >"${known_hosts_file}"
+          chmod 600 "${known_hosts_file}"
+          ssh-keygen -F "${NEBIUS_VM_PUBLIC_IP}" -f "${known_hosts_file}" >/dev/null
+          {
+            echo "SLURM_ATF_SSH_PRIVATE_KEY_FILE=${private_key_file}"
+            echo "SLURM_ATF_SSH_KNOWN_HOSTS_FILE=${known_hosts_file}"
+          } >>"${GITHUB_ENV}"
+
+      - if: steps.selection.outcome == 'success' && steps.selection.outputs.count != '0'
+        name: Verify the handed-off H200 VM
+        run: |
+          set -euo pipefail
+          instance_json="$(nebius compute instance get \
+            --profile "${NEBIUS_CLI_PROFILE}" \
+            --no-progress \
+            --format json \
+            --timeout=1m \
+            --id "${NEBIUS_VM_ID}")"
+          test "$(jq -er '.metadata.id' <<<"${instance_json}")" = "${NEBIUS_VM_ID}"
+          current_ip="$(jq -er \
+            '.status.network_interfaces[0].public_ip_address.address | split("/")[0]' \
+            <<<"${instance_json}")"
+          test "${current_ip}" = "${NEBIUS_VM_PUBLIC_IP}"
+          ssh \
+            -i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" \
+            "${SLURM_ATF_SSH_USER}@${NEBIUS_VM_PUBLIC_IP}" \
+            'sudo test -f /etc/slurm-atf-disposable && test "$(nvidia-smi -L | wc -l)" = 8'
+
+      - id: remote_patch
+        if: steps.selection.outcome == 'success' && steps.selection.outputs.count != '0'
+        name: Run the selected patch tests on H200
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          remote_root="/home/${SLURM_ATF_SSH_USER}/slurm-atf"
+          run_id="${{ inputs.run_kind }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ inputs.shard_id }}"
+          ci-tools/nebius/ci/atf/run-remote-patch-tests.sh \
+            "${NEBIUS_VM_PUBLIC_IP}" \
+            "${remote_root}" \
+            "${run_id}" \
+            "${{ needs.expect.outputs.source_commit }}" \
+            "${{ needs.expect.outputs.tests_commit }}" \
+            patch-result/selection.json
+
+      - if: >-
+          always() &&
+          steps.selection.outcome == 'success' &&
+          steps.selection.outputs.count != '0' &&
+          steps.restore_ssh.outcome == 'success'
+        name: Collect patch-test evidence
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          remote_root="/home/${SLURM_ATF_SSH_USER}/slurm-atf"
+          scp \
+            -i "${SLURM_ATF_SSH_PRIVATE_KEY_FILE}" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=6 \
+            -o StrictHostKeyChecking=yes \
+            -o "UserKnownHostsFile=${SLURM_ATF_SSH_KNOWN_HOSTS_FILE}" \
+            -r "${SLURM_ATF_SSH_USER}@${NEBIUS_VM_PUBLIC_IP}:${remote_root}/patch-result/." \
+            patch-result/ || true
+
+      - id: validation
+        if: always() && steps.selection.outcome == 'success'
+        name: Require every patch-specific testcase to pass
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          args=(
+            patch-result/selection.json
+            --json patch-result/validation.json
+            --markdown patch-result/validation.md
+          )
+          if [[ "${{ steps.selection.outputs.count }}" != 0 ]]; then
+            test -s patch-result/pytest-exit-status
+            test "$(<patch-result/pytest-exit-status)" = 0
+            args+=(--junit patch-result/junit.xml)
+          fi
+          python3 ci-tools/nebius/ci/atf/validate_patch_tests.py "${args[@]}"
+          cat patch-result/validation.md >>"${GITHUB_STEP_SUMMARY}"
+
+      - id: patch_metadata
+        if: always() && steps.selection.outcome == 'success'
+        name: Record patch-test provenance
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          selection_sha256="$(sha256sum patch-result/selection.json | awk '{print $1}')"
+          selected_count="$(jq -er '.selected_files | length' patch-result/selection.json)"
+          junit_sha256=""
+          pytest_status=""
+          if ((selected_count > 0)); then
+            test -s patch-result/junit.xml
+            test -s patch-result/pytest-exit-status
+            junit_sha256="$(sha256sum patch-result/junit.xml | awk '{print $1}')"
+            pytest_status="$(<patch-result/pytest-exit-status)"
+            [[ "${pytest_status}" =~ ^[0-9]+$ ]]
+          fi
+          jq -n \
+            --arg source_commit "${{ needs.expect.outputs.source_commit }}" \
+            --arg tests_commit "${{ needs.expect.outputs.tests_commit }}" \
+            --arg image_id "${NEBIUS_VM_IMAGE_ID}" \
+            --arg vm_shape "${{ needs.expect.outputs.vm_shape }}" \
+            --arg selection_sha256 "${selection_sha256}" \
+            --arg junit_sha256 "${junit_sha256}" \
+            --arg pytest_status "${pytest_status}" \
+            --arg validation_outcome "${{ steps.validation.outcome }}" \
+            --arg run_id "${GITHUB_RUN_ID}" \
+            --arg run_attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg run_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --argjson selected_count "${selected_count}" \
+            '{
+              schema: 1,
+              kind: "patch-tests",
+              source: {commit: $source_commit},
+              baseline_tests: {commit: $tests_commit},
+              vm: {
+                image_id: $image_id,
+                shape: $vm_shape,
+                atf_profile: "h200"
+              },
+              selection: {
+                policy: "changed-files-on-h200-v1",
+                files: $selected_count,
+                sha256: $selection_sha256
+              },
+              result: {
+                validation_outcome: $validation_outcome,
+                pytest_exit_status: (
+                  if $pytest_status == "" then null else ($pytest_status | tonumber) end
+                ),
+                junit_sha256: (
+                  if $junit_sha256 == "" then null else $junit_sha256 end
+                )
+              },
+              workflow: {
+                run_id: $run_id,
+                run_attempt: $run_attempt,
+                run_url: $run_url
+              }
+            }' >patch-result/run-metadata.json
+
+      - if: always()
+        name: Upload patch-specific H200 evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: slurm-atf-patch-tests-${{ github.run_id }}-${{ github.run_attempt }}-gpu
+          path: patch-result/
+          if-no-files-found: error
+          retention-days: 30
+
+      - if: >-
+          always() &&
+          (steps.selection.outcome != 'success' ||
+           steps.validation.outcome != 'success' ||
+           steps.patch_metadata.outcome != 'success' ||
+           (steps.selection.outputs.count != '0' &&
+            steps.remote_patch.outcome != 'success'))
+        name: Fail after preserving patch-test evidence
+        run: |
+          echo "Patch-specific tests were not all executed and passed on H200." >&2
+          exit 1
+
   cleanup:
     name: Delete the disposable Nebius VM / ${{ inputs.shard_id }}
     needs:
       - expect
       - pytest
+      - patch_tests
     if: always()
     runs-on: ubuntu-24.04
     environment: e2e
@@ -735,6 +1045,7 @@ jobs:
       KEEP_VM_ON_FAILURE: ${{ inputs.keep_vm_on_failure }}
       EXPECT_RESULT: ${{ needs.expect.result }}
       PYTEST_RESULT: ${{ needs.pytest.result }}
+      PATCH_TESTS_RESULT: ${{ needs.patch_tests.result }}
 
     steps:
       - name: Checkout the VM lifecycle tool
@@ -788,7 +1099,10 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${KEEP_VM_ON_FAILURE}" == true && \
-            ("${EXPECT_RESULT}" != success || "${PYTEST_RESULT}" != success) ]]; then
+            ("${EXPECT_RESULT}" != success || \
+             "${PYTEST_RESULT}" != success || \
+             ("${PATCH_TESTS_RESULT}" != success && \
+              "${PATCH_TESTS_RESULT}" != skipped)) ]]; then
             {
               echo "> [!WARNING]"
               echo "> VM kept because an ATF phase failed and keep_vm_on_failure=true."

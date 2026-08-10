@@ -11298,6 +11298,18 @@ static const parser_t PARSER_ARRAY(OPENAPI_NODES_QUERY)[] = {
 #undef add_parse
 
 #define add_parse(mtype, field, path, desc)				\
+	add_parser(openapi_reboot_nodes_request_t, mtype, false, field, 0, path, desc)
+static const parser_t PARSER_ARRAY(OPENAPI_REBOOT_NODES_REQ)[] = {
+	add_parse(BOOL, asap, "asap", "Drain nodes and reboot as soon as possible"),
+	add_parse(BOOL, force, "force", "Force reboot, killing and requeuing running jobs where possible"),
+	add_parse(STRING, node_list, "nodes", "Node list to reboot, or ALL"),
+	add_parse(NODE_STATES, next_state, "next_state", "State to assign to the node after reboot; valid values are DOWN or RESUME"),
+	add_parse(STRING, power_action, "power_action", "PowerAction name for reboot script; if unset, use RebootProgram"),
+	add_parse(STRING, reason, "reason", "Reason to attach to the node during reboot"),
+};
+#undef add_parse
+
+#define add_parse(mtype, field, path, desc)				\
 	add_parser(openapi_reservation_param_t, mtype, false, field, 0, path, desc)
 static const parser_t PARSER_ARRAY(OPENAPI_RESERVATION_PARAM)[] = {
 	add_parse(STRING, reservation_name, "reservation_name", "Reservation name"),
@@ -13725,6 +13737,7 @@ static const parser_t parsers[] = {
 	addpap(OPENAPI_JOB_INFO_QUERY, openapi_job_info_query_t, NULL, NULL),
 	addpap(OPENAPI_NODE_PARAM, openapi_node_param_t, NULL, NULL),
 	addpap(OPENAPI_NODES_QUERY, openapi_nodes_query_t, NULL, NULL),
+	addpap(OPENAPI_REBOOT_NODES_REQ, openapi_reboot_nodes_request_t, NULL, NULL),
 	addpap(OPENAPI_PARTITION_PARAM, openapi_partition_param_t, NULL, NULL),
 	addpap(OPENAPI_PARTITIONS_QUERY, openapi_partitions_query_t, NULL, NULL),
 	addpap(OPENAPI_RESERVATION_PARAM, openapi_reservation_param_t, NULL, NULL),

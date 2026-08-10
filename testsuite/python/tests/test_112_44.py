@@ -324,7 +324,18 @@ def test_specification(openapi_spec):
         patch = atf.get_deprecated_openapi_spec_patch(openapi_spec)
         patch.apply(openapi_spec, in_place=True)
 
-    atf.assert_openapi_spec_eq(openapi_spec, atf.properties["openapi_spec"])
+    # NB-0003 adds downstream-only node reboot operations to the otherwise
+    # frozen upstream v0.0.44 schema. Compare the upstream surface separately;
+    # test_nebius_reboot_rest_api.py validates the added paths and request
+    # schema directly.
+    actual_spec = json.loads(json.dumps(atf.properties["openapi_spec"]))
+    actual_spec["paths"].pop("/slurm/v0.0.44/nodes/reboot")
+    actual_spec["paths"].pop("/slurm/v0.0.44/node/{node_name}/reboot")
+    actual_spec["components"]["schemas"].pop(
+        "v0.0.44_openapi_reboot_nodes_req"
+    )
+
+    atf.assert_openapi_spec_eq(openapi_spec, actual_spec)
 
 
 def test_db_accounts(slurm, slurmdb, create_wckeys, admin_level):

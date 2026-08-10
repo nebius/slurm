@@ -73,9 +73,6 @@ extern int scontrol_reboot_nodes(char *node_list, bool asap, bool force,
 				 char *power_action)
 {
 	slurm_conf_t *conf;
-	int rc;
-	slurm_msg_t msg;
-	reboot_msg_t req;
 
 	conf = slurm_conf_lock();
 	if (!power_action || !power_action[0]) {
@@ -87,25 +84,6 @@ extern int scontrol_reboot_nodes(char *node_list, bool asap, bool force,
 	}
 	slurm_conf_unlock();
 
-	slurm_msg_t_init(&msg);
-
-	slurm_init_reboot_msg(&req, true);
-	req.next_state = next_state;
-	req.node_list  = node_list;
-	req.reason     = reason;
-	req.power_action_name = power_action;
-	if (asap)
-		req.flags |= REBOOT_FLAGS_ASAP;
-	if (force)
-		req.flags |= REBOOT_FLAGS_FORCE;
-	msg.msg_type = REQUEST_REBOOT_NODES;
-	msg.data = &req;
-
-	if (slurm_send_recv_controller_rc_msg(&msg, &rc, working_cluster_rec)<0)
-		return SLURM_ERROR;
-
-	if (rc)
-		slurm_seterrno_ret(rc);
-
-	return rc;
+	return slurm_reboot_nodes(node_list, asap, force, next_state, reason,
+				  power_action);
 }

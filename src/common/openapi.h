@@ -447,6 +447,15 @@ typedef struct {
 } openapi_nodes_query_t;
 
 typedef struct {
+	bool asap;
+	bool force;
+	uint32_t next_state;
+	char *node_list;
+	char *power_action;
+	char *reason;
+} openapi_reboot_nodes_request_t;
+
+typedef struct {
 	char *partition_name;
 } openapi_partition_param_t;
 

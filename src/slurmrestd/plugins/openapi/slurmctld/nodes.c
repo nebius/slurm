@@ -96,6 +96,58 @@ cleanup:
 	FREE_NULL_DATA(ppath);
 }
 
+static void _free_reboot_nodes_request(openapi_reboot_nodes_request_t *req)
+{
+	xfree(req->node_list);
+	xfree(req->power_action);
+	xfree(req->reason);
+}
+
+static bool _valid_reboot_next_state(uint32_t next_state)
+{
+	return ((next_state == NO_VAL) || (next_state == NODE_STATE_DOWN) ||
+		(next_state == NODE_RESUME));
+}
+
+static void _reboot_nodes(ctxt_t *ctxt, char *name)
+{
+	data_t *ppath = data_set_list(data_new());
+	openapi_reboot_nodes_request_t req = { .next_state = NO_VAL };
+
+	if (DATA_PARSE(ctxt->parser, OPENAPI_REBOOT_NODES_REQ, req,
+		       ctxt->query, ppath))
+		goto cleanup;
+
+	if (name) {
+		if (req.node_list) {
+			resp_warn(ctxt, __func__,
+				  "nodes field %s ignored for singular node reboot",
+				  req.node_list);
+			xfree(req.node_list);
+		}
+		req.node_list = xstrdup(name);
+	} else if (!req.node_list || !req.node_list[0]) {
+		resp_error(ctxt, ESLURM_REST_INVALID_QUERY, __func__,
+			   "Missing nodes field");
+		goto cleanup;
+	}
+
+	if (!_valid_reboot_next_state(req.next_state)) {
+		resp_error(ctxt, ESLURM_INVALID_NODE_STATE, __func__,
+			   "Invalid next_state. Valid states are DOWN and RESUME");
+		goto cleanup;
+	}
+
+	if (slurm_reboot_nodes(req.node_list, req.asap, req.force,
+			       req.next_state, req.reason, req.power_action))
+		resp_error(ctxt, errno, __func__,
+			   "Failure to reboot nodes %s", req.node_list);
+
+cleanup:
+	_free_reboot_nodes_request(&req);
+	FREE_NULL_DATA(ppath);
+}
+
 
 static void _dump_nodes(ctxt_t *ctxt, char *name)
 {
@@ -218,6 +270,40 @@ extern int op_handler_create_node(openapi_ctxt_t *ctxt)
 				  "Unsupported HTTP method requested: %s",
 				  get_http_method_string(ctxt->method));
 	_create_node(ctxt);
+	return SLURM_SUCCESS;
+}
+
+extern int op_handler_reboot_nodes(openapi_ctxt_t *ctxt)
+{
+	if (ctxt->method != HTTP_REQUEST_POST)
+		return resp_error(ctxt, ESLURM_REST_INVALID_QUERY, __func__,
+				  "Unsupported HTTP method requested: %s",
+				  get_http_method_string(ctxt->method));
+
+	_reboot_nodes(ctxt, NULL);
+	return SLURM_SUCCESS;
+}
+
+extern int op_handler_reboot_node(openapi_ctxt_t *ctxt)
+{
+	openapi_node_param_t params = {0};
+
+	if (ctxt->method != HTTP_REQUEST_POST)
+		return resp_error(ctxt, ESLURM_REST_INVALID_QUERY, __func__,
+				  "Unsupported HTTP method requested: %s",
+				  get_http_method_string(ctxt->method));
+
+	if (DATA_PARSE(ctxt->parser, OPENAPI_NODE_PARAM, params,
+		       ctxt->parameters, ctxt->parent_path)) {
+		resp_error(ctxt, ESLURM_REST_INVALID_QUERY, __func__,
+			   "Rejecting request. Failure parsing parameters");
+		goto done;
+	}
+
+	_reboot_nodes(ctxt, params.node_name);
+
+done:
+	xfree(params.node_name);
 	return SLURM_SUCCESS;
 }
 

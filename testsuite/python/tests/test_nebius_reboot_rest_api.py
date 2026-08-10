@@ -3,6 +3,8 @@
 ############################################################################
 """Verify the Nebius node reboot endpoints in slurmrestd."""
 
+from http import HTTPStatus
+
 import pytest
 import requests
 
@@ -35,6 +37,28 @@ def nodes():
     return node_names
 
 
+@pytest.fixture(scope="module")
+def admin_headers():
+    """Return JWT headers for SlurmUser, which may issue reboot requests."""
+
+    user = atf.properties["slurm-user"]
+    token = (
+        atf.run_command_output(
+            f"scontrol token username={user} lifespan=600",
+            user=user,
+            fatal=True,
+            quiet=True,
+        )
+        .replace("SLURM_JWT=", "")
+        .strip()
+    )
+    assert token
+    return {
+        "X-SLURM-USER-NAME": user,
+        "X-SLURM-USER-TOKEN": token,
+    }
+
+
 @pytest.fixture(scope="function", autouse=True)
 def cleanup_reboot_requests():
     yield
@@ -48,15 +72,13 @@ def cleanup_reboot_requests():
     atf.cancel_all_jobs(fatal=True, quiet=True)
 
 
-def _post(path, body):
-    response = requests.post(
+def _post(path, body, headers=None):
+    return requests.post(
         f"{atf.properties['slurmrestd_url']}/slurm/{api_version}/{path}",
-        headers=atf.properties["slurmrestd-headers"],
+        headers=headers or atf.properties["slurmrestd-headers"],
         json=body,
         timeout=30,
     )
-    assert response.status_code == 200, response.text
-    return response.json()
 
 
 def _allocate(node_list):
@@ -104,7 +126,7 @@ def test_openapi_schema_exposes_reboot_endpoints():
     }
 
 
-def test_reboot_nodes(nodes):
+def test_reboot_nodes(nodes, admin_headers):
     _allocate(nodes)
     response = _post(
         "nodes/reboot",
@@ -113,7 +135,10 @@ def test_reboot_nodes(nodes):
             "next_state": ["DOWN"],
             "reason": reboot_reason,
         },
+        admin_headers,
     )
+    assert response.status_code == HTTPStatus.OK, response.text
+    response = response.json()
 
     assert not response["errors"]
     assert not response["warnings"]
@@ -123,7 +148,7 @@ def test_reboot_nodes(nodes):
     _cancel_reboot(nodes)
 
 
-def test_reboot_single_node_ignores_nodes_in_body(nodes):
+def test_reboot_single_node_ignores_nodes_in_body(nodes, admin_headers):
     target, other = nodes
     _allocate([target])
     response = _post(
@@ -135,7 +160,10 @@ def test_reboot_single_node_ignores_nodes_in_body(nodes):
             "next_state": ["RESUME"],
             "reason": reboot_reason,
         },
+        admin_headers,
     )
+    assert response.status_code == HTTPStatus.OK, response.text
+    response = response.json()
 
     assert not response["errors"]
     assert response["warnings"]
@@ -148,6 +176,8 @@ def test_reboot_single_node_ignores_nodes_in_body(nodes):
 
 def test_reboot_nodes_requires_nodes():
     response = _post("nodes/reboot", {})
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, response.text
+    response = response.json()
     assert response["errors"]
     assert "Missing nodes field" in response["errors"][0]["description"]
 
@@ -157,15 +187,20 @@ def test_reboot_nodes_rejects_invalid_next_state(nodes):
         "nodes/reboot",
         {"nodes": nodes[0], "next_state": ["IDLE"]},
     )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, response.text
+    response = response.json()
     assert response["errors"]
     assert "Invalid next_state" in response["errors"][0]["description"]
 
 
-def test_reboot_nodes_forwards_power_action(nodes):
+def test_reboot_nodes_forwards_power_action(nodes, admin_headers):
     response = _post(
         "nodes/reboot",
         {"nodes": nodes[0], "power_action": "not-configured"},
+        admin_headers,
     )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY, response.text
+    response = response.json()
     assert response["errors"]
     error = response["errors"][0]
     assert "Invalid power action" in (

@@ -263,7 +263,6 @@ test7.4    Test of TotalView operation with srun, with and without bulk
 test7.5    Test of TotalView termination logic for srun.
 test7.6    Test of TotalView operation with sattach
 test7.7    Test of resource allocation layout.
-test7.8    (removed)
 test7.9    Test that no files are open in spawned tasks (except stdin,
 	   stdout, and stderr) to ensure successful checkpoint/restart.
 test7.10   Test if we can trick Slurm into using the wrong user ID
@@ -306,7 +305,6 @@ test12.2   Test validity/accuracy of accounting data for exit code,
 	   memory and real-time information along with stating a running job.
 test12.3   Test sacct filtering of records by account and job name.
 test12.4   Test sacct --b, g, j, l, n, p, u, v options.
-test12.6   Test hdf5 acct_gather_profile (--profile=task)
 test12.7   Validate that -D shows the correct state when jobs are requeued.
 test12.8   Validate that a job step reports TIMEOUT inside accounting.
 test12.9   Test of sacct functionality for array jobs.
@@ -401,7 +399,6 @@ test17.10  Test of processors, memory, and temporary disk space
 	   constraints options (--mincpus, --mem, and --tmp options).
 	   Also test that priority zero job is not started (--hold
 	   option).
-test17.11  Test of oversubscribe and contiguous options, also uses --hold option.
 test17.12  Verify node configuration specification (--constraint option)
 test17.13  Verify the appropriate job environment variables are set
 test17.14  Verify that user environment variables are propagated to the job
@@ -420,7 +417,6 @@ test17.27  Test that a job executes with the specified nodes, requires multiple
 	   nodes (--nodes, --nodelist and --exclude options).
 test17.28  Tests #SBATCH entry functionality in a batch script.
 test17.29  Verify that command arguments get forwarded to job script.
-test17.30  Test of comment field specification (--comment option).
 test17.31  Tests #PBS entry functionality in a batch script.
 test17.32  Test of --overcommit option.
 test17.33  Test of --open-mode option.
@@ -600,11 +596,6 @@ test32.10  Validates that sgather -r copies files recursively.
 test32.11  Validates that sgather -v prints the output logging of the job.
 test32.12  Validates that sgather -t changes the timeout message.
 
-test33.#   Test of message forwarding.
-======================================
-test33.1   Validates the topology_g_split_hostlist api of the route plugin
-	   correctly splits hostlists.
-
 test34.*   Test of Slurm preemption.
 ====================================
 test34.2   Validate that qos PreemptMode is enforced.
@@ -711,6 +702,7 @@ test_101_#   Testing of sacct options.
 test_101_1   Test --help and --helpformat
 test_101_2   Test sacct SLUID support including resizes and OriginalSLUID
 test_101_3   Test sacct OverSubscribe and Exclusive reporting from slurmdbd
+test_101_4   Test basic sacct --json
 
 test_102_#   Testing of sacctmgr options.
 =========================================
@@ -725,6 +717,7 @@ test_102_8   Test sacctmgr remove multiple qos
 test_102_9   Performance test: sacctmgr delete user with large assoc table
 test_102_10  Test sacctmgr modify TRES with +=/-= syntax
 test_102_11  Test sacctmgr archive dump uses configured Purge*After when no duration is given
+test_102_12  Test sacctmgr load, confirm that typed GRES can get parsed correctly
 
 test_103_#   Testing of salloc options.
 =======================================
@@ -747,7 +740,9 @@ test_105_6   Test #SBATCH directives in sbatch scripts
 test_105_7   Test accounting for GPU resources with various allocation options
 test_105_8   Test of job account (--account option).
 test_105_9   Test sbatch --requeue=expedite option (success, failure, epilog failure cases)
-
+test_105_10  Test --oom-kill-step option
+test_105_11  Test sbatch --parsable output format
+test_105_12  Test JobAcctGatherParams=OverMemoryKill enforcement
 
 test_106_#   Testing of sbcast options.
 =======================================
@@ -776,6 +771,7 @@ test_108_8   Test of InstanceId/InstanceType
 test_108_9   Test scontrol listpids with Job IDs and SLUIDs
 test_108_10  Submit and modify jobs using a mix of Job IDs and SLUIDs
 test_108_11  Test scontrol update NodeName=ALL with AvailableFeatures
+test_108_12  Test nodes join feature-based NodeSet partitions on update
 
 test_109_#   Testing of sdiag options.
 ======================================
@@ -793,14 +789,19 @@ test_111_2   /commands/sinfo/test_--usage.py
 test_111_3   /commands/sinfo/test_--json.py
 test_111_4   Test --state and --nodes filtering
 test_111_5   /commands/sinfo/test_--state.py
+test_111_6   Verify --states name parsing, --helpstate round-trip, and
+             invalid-state rejection
 
 test_112_#   Testing of slurmrestd options.
 ===========================================
 test_112_1   /commands/slurmrestd/test_options.py
+test_112_2   Test slurmrestd's http_parser plugin
+test_112_41  Test slurmrestd v0.0.41 requests
 test_112_42  Test slurmrestd v0.0.42 requests
 test_112_43  Test slurmrestd v0.0.43 requests
 test_112_44  Test slurmrestd v0.0.44 requests
-test_112_44  Test slurmrestd v0.0.45 requests
+test_112_45  Test slurmrestd v0.0.45 requests
+test_112_46  Test slurmrestd v0.0.46 requests
 
 test_113_#   Testing of sprio options.
 ======================================
@@ -876,6 +877,12 @@ test_116_51 /commands/srun/test_--exclusive=allocation
 test_116_52 /commands/srun/test_--exclusive_with_LaunchParamsExclAlloc
 test_116_53  Test MPI/PMIx signaling
 test_116_54  Test MPI/PMI2 signaling (requires MPICH)
+test_116_55  Test srun --async CLI behavior
+test_116_56  Test srun --relative
+test_116_57  Test srun in het job nested in non-het job
+test_116_58  Test srun --async --kill-on-bad-exit kills remaining tasks
+test_116_59  Test the --runtime job submission option and its runtime plugins
+test_116_60  Test the srun/salloc/sbatch --runtime=list option
 
 test_117_#   Testing of sstat options.
 ======================================
@@ -898,6 +905,7 @@ test_119_2   /contribs/torque/qsub/test_basic.py
 test_120_#   Testing of cgroups.
 ================================
 test_120_1   Check that cgroup path is constructed with the job SLUID.
+test_120_2   Check that cgroup path is constructed with the job ID when configured.
 
 test_121_#   Testing of mps.
 =============================
@@ -909,6 +917,7 @@ test_122_#   Testing of job_arrays.
 test_122_1   /features/job_arrays/test_basics.py
 test_122_2   Test job array with gres
 test_122_3   Test suspension of job arrays
+test_122_4   Test srun --jobid attach to a running job array task
 
 test_123_#   Testing of reservations.
 =====================================
@@ -922,6 +931,8 @@ test_123_7   Test reservation node replacement interactions
 test_123_8   Test reservation node replacement by features
 test_123_9   Test reservation access with account/user deny '-' lists
 test_123_10  Test reservation creation does not allocate MAINT-reserved nodes
+test_123_11  Test MAGNETIC+FLEX reservations will pick up long jobs
+test_123_12  Test NodeCnt reservation with IGNORE_JOBS on busy partition nodes
 
 test_124_#   Testing of AccountingStorageEnforce.
 =================================================
@@ -934,6 +945,7 @@ test_125_1   /parameters/slurm/BurstBufferType/datawarp/test_datawarp.py
 test_126_#   Testing of EnforcePartLimits.
 ==========================================
 test_126_1   /parameters/slurm/EnforcePartLimits/test_enforcePartLimits.py
+test_126_2   Test het job with per-component QoS/limit aggregation (DenyOnLimit)
 
 test_127_#   Testing of Epilog.
 ===============================
@@ -944,15 +956,19 @@ test_128_#   Testing of PreemptType.
 test_128_1   /parameters/slurm/PreemptType/partition_prio/test_preemption_by_partition.py
 test_128_2   Test PreemptExemptTime for "suspend,gang","requeue", and "cancel"
 
-test_129_#   Testing of PreserveCaseUser.
-=========================================
-test_129_1   /parameters/slurm/PreserveCaseUser/test_PreserveCaseUser.py
+test_129_#   Testing of preserve-case slurmdbd parameters.
+===========================================================
+test_129_1   PreserveCaseUser and PreserveCaseAll behavior
 
 test_130_#   Testing of PriorityType.
 =====================================
 test_130_1   /parameters/slurm/PriorityType/basic/test_priority.py
 test_130_2   multifactor plugin algo test for fairshare=parent
 test_130_3   /parameters/slurm/PriorityType/multifactor/test_priority.py
+
+test_131_#   Testing of sshare options.
+========================================
+test_131_1   Test basic sshare --json
 
 test_132_#   Testing of Prolog.
 ===============================
@@ -994,11 +1010,13 @@ test_140_#   Testing --tres options.
 ====================================
 test_140_1   Test --tres-per-task option
 test_140_2   Test --tres-bind validation
+test_140_3   Test license alloc/used and hold across batch job requeue
 
 test_141_#   Testing PowerSave/Cloud operations.
 ================================================
 test_141_1   Test state cycle, timeouts, scontrol commands, PowerDownOnIdle, and Node Features reboot
 test_141_2   Testing Global,Per-Partition,Per-Node Cloud Options
+test_141_3   Test node reboot and power down/up actions via slurmctld and slurmd
 
 test_143_#   Testing --switches.
 ================================
@@ -1017,6 +1035,8 @@ test_144_9   Test RestrictedCoresPerGPU
 test_144_10  Test Flags=env_uuid sets proper environment variables
 test_144_11  Test GRES reservation with node table changes
 test_144_12  Test dynamic-normal slurmd (`slurmd -Z`) GRES autofill
+test_144_13  Test CountOnly GRES does not alter per-socket core distribution
+test_144_14  Test overcommit with GRES tres-per-task
 
 test_145_#   Testing --constraint.
 ==================================
@@ -1036,6 +1056,8 @@ test_147_2   Test SPANK remote spank init failure modes
 test_149_#   Testing AcctGatherProfileType.
 ===========================================
 test_149_1   Test acct_gather_profile/influxdb
+test_149_2   Test acct_gather_profile/influxdb grouped fields and extra tags
+test_149_3   Test acct_gather_profile/hdf5 task profile consistency
 
 test_150_#   Testing topology plugins.
 ================================
@@ -1043,11 +1065,17 @@ test_150_1   Test topology/block
 test_150_2   Test "--nodelist" + "--segment"
 test_150_3   Test topology-aware task distribution
 test_150_4   Test topology/flat alpha_step_rank with dynamic nodes
+test_150_5   Test slurmd first-registration gate for topology/instance/extra fields
+test_150_6   Test topology/tree + RouteTree relays a forwarded message once per switch
+test_150_7   Test topology preserved when a partial node update splits the config
+test_150_8   Test overcommit with cpus-per-task across a topology cluster
 
 test_151_#   Testing Oversubscribe
 ===========================================
 test_151_1   Test oversubscribe with sharing partitions
 test_151_2   Test OverSubscribe and Exclusive intent in scontrol and env vars
+test_151_3   Test oversubscribe and contiguous options.
+test_151_4   Test per-partition OverSubscribe job count for FORCE and YES
 
 test_152_#   Testing switch/nvidia_imex.
 ========================================
@@ -1066,6 +1094,7 @@ test_154_1   Test HRes MODE_3
 test_155_#   Testing sh5util
 ========================================
 test_155_1   Test sh5util options
+test_155_2   Test sh5util merge and extract (--profile=task)
 
 test_156_#   Testing job step launching
 ========================================
@@ -1074,6 +1103,7 @@ test_156_1   Test "--hint=nomultithread"
 test_157_#   Testing of JobSubmitPlugins.
 ============================================
 test_157_1   Test job_desc with JobSubmitPlugins=lua
+test_157_2   Test core_spec/thread_spec in job_desc with JobSubmitPlugins=lua
 
 test_158_#   Testing of Licenses
 ============================================
@@ -1092,3 +1122,17 @@ test_160_1   Test memory reduction on running jobs (scontrol and --mem-update)
 test_161_#   Testing topology/torus3d.
 ========================================
 test_161_1   Test topology/torus3d placements, constraints, and --segment
+
+test_162_#   Testing of swait and stepmgr/async-step integration.
+=================================================================
+test_162_1   Test swait against a stepmgr-enabled cluster
+test_162_2   Test swait's steps-drained push path
+test_162_3   Test scontrol visibility and reconfigure-survival of async steps
+
+test_163_#   Testing jobacct_gather/cgroup memory accounting.
+=============================================================
+test_163_1   Test completed accounting preserves short memory peaks
+
+test_164_#   Testing batch job launch recovery.
+=================================================
+test_164_1   Test a batch job survives a slurmctld reconfigure during its prolog

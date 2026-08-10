@@ -1,0 +1,298 @@
+name: Slurm ATF vanilla baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_line:
+        description: Slurm release line, for example 26.05
+        required: true
+        default: "26.05"
+        type: string
+      upstream_branch:
+        description: Clean mirror branch in the Nebius fork
+        required: true
+        default: slurm-26.05
+        type: string
+      nebius_cli_profile:
+        description: Profile name inside NEBIUS_CLI_CONFIG
+        required: true
+        default: default
+        type: string
+      cpu_image_id:
+        description: Immutable image for the four generic CPU shards
+        required: true
+        default: computeimage-e00sphs75y9ej9nw9j
+        type: string
+      gpu_image_id:
+        description: Immutable image for the H200 GPU shard
+        required: true
+        default: computeimage-e00gq5v1eyswsdk55g
+        type: string
+      keep_vm_on_failure:
+        description: Keep the VM after an infrastructure failure for SSH debugging
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: slurm-atf-baseline-${{ inputs.release_line }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Verify the vanilla source boundary
+    runs-on: ubuntu-24.04
+    outputs:
+      source_commit: ${{ steps.boundary.outputs.source_commit }}
+      upstream_commit: ${{ steps.boundary.outputs.upstream_commit }}
+    steps:
+      - name: Checkout the selected NB-0001 ref
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - id: boundary
+        name: Require NB-0001 to contain no product changes
+        env:
+          RELEASE_LINE: ${{ inputs.release_line }}
+          UPSTREAM_BRANCH: ${{ inputs.upstream_branch }}
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_LINE}" =~ ^[0-9]+\.[0-9]+$ ]]
+          test "${UPSTREAM_BRANCH}" = "slurm-${RELEASE_LINE}"
+
+          git fetch --no-tags origin \
+            "+refs/heads/${UPSTREAM_BRANCH}:refs/remotes/origin/${UPSTREAM_BRANCH}"
+          source_commit="$(git rev-parse HEAD)"
+          upstream_commit="$(git rev-parse "origin/${UPSTREAM_BRANCH}^{commit}")"
+          git merge-base --is-ancestor "${upstream_commit}" "${source_commit}"
+
+          unexpected=()
+          while IFS= read -r path; do
+            case "${path}" in
+              .github/* | nebius/* | testsuite/* | doc/* | README.md | *.md)
+                ;;
+              *)
+                unexpected+=("${path}")
+                ;;
+            esac
+          done < <(git diff --name-only "${upstream_commit}" "${source_commit}")
+
+          if ((${#unexpected[@]})); then
+            printf '%s\n' \
+              "NB-0001 is not a vanilla baseline: product files differ from ${UPSTREAM_BRANCH}:" \
+              "${unexpected[@]}" >&2
+            exit 1
+          fi
+
+          {
+            echo "source_commit=${source_commit}"
+            echo "upstream_commit=${upstream_commit}"
+          } >>"${GITHUB_OUTPUT}"
+          {
+            echo "### Vanilla boundary"
+            echo
+            echo "- Clean mirror: \`${UPSTREAM_BRANCH}@${upstream_commit}\`"
+            echo "- NB-0001 ref: \`${GITHUB_REF}@${source_commit}\`"
+            echo "- Product changes: none"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  run:
+    name: Run the full vanilla suite
+    needs: prepare
+    uses: ./.github/workflows/_slurm-atf-sharded-run.yml
+    with:
+      run_kind: baseline
+      release_line: ${{ inputs.release_line }}
+      tests_ref: ${{ needs.prepare.outputs.source_commit }}
+      cpu_image_id: ${{ inputs.cpu_image_id }}
+      gpu_image_id: ${{ inputs.gpu_image_id }}
+      nebius_cli_profile: ${{ inputs.nebius_cli_profile }}
+      keep_vm_on_failure: ${{ inputs.keep_vm_on_failure }}
+    secrets: inherit
+
+  publish:
+    name: Publish the immutable baseline
+    needs:
+      - prepare
+      - run
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      ARTIFACT_NAME: ${{ needs.run.outputs.artifact_name }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_LINE: ${{ inputs.release_line }}
+      SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+      UPSTREAM_COMMIT: ${{ needs.prepare.outputs.upstream_commit }}
+    steps:
+      - name: Download complete baseline evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: baseline-evidence
+
+      - id: package
+        name: Validate and package the baseline
+        run: |
+          set -euo pipefail
+          test -s baseline-evidence/junit.xml
+          test -s baseline-evidence/image-metadata.json
+          test -s baseline-evidence/pytest-exit-status
+          test -s baseline-evidence/run-manifest.json
+          test -s baseline-evidence/run-metadata.json
+          test -z "$(find baseline-evidence -type l -print -quit)"
+          test "$(jq -er '.kind' baseline-evidence/run-metadata.json)" = baseline
+          test "$(jq -er '.release_line' baseline-evidence/run-metadata.json)" = "${RELEASE_LINE}"
+          test "$(jq -er '.source.commit' baseline-evidence/run-metadata.json)" = "${SOURCE_COMMIT}"
+          test "$(jq -er '.tests.commit' baseline-evidence/run-metadata.json)" = "${SOURCE_COMMIT}"
+          test "$(jq -er '.vm.topology' baseline-evidence/run-metadata.json)" = \
+            4cpu+1gpu
+          test "$(jq -er '.vm.cpu.count' baseline-evidence/run-metadata.json)" = 4
+          test "$(jq -er '.vm.cpu.atf_profile' baseline-evidence/run-metadata.json)" = \
+            generic
+          test "$(jq -er '.vm.gpu.count' baseline-evidence/run-metadata.json)" = 1
+          test "$(jq -er '.vm.gpu.atf_profile' baseline-evidence/run-metadata.json)" = \
+            h200
+          test "$(jq -er '.sharding.algorithm' baseline-evidence/run-metadata.json)" = \
+            balanced-hash-v1
+          test "$(jq -er '.sharding.shards | length' baseline-evidence/run-metadata.json)" = 5
+          pytest_status="$(<baseline-evidence/pytest-exit-status)"
+          test "$(jq -er '.result.pytest_exit_status' baseline-evidence/run-metadata.json)" = \
+            "${pytest_status}"
+          if [[ "${pytest_status}" != 0 ]]; then
+            echo "Refusing to publish a baseline with pytest exit status ${pytest_status}" >&2
+            exit 1
+          fi
+          test "$(jq -er '.result.junit_sha256' baseline-evidence/run-metadata.json)" = \
+            "$(sha256sum baseline-evidence/junit.xml | awk '{print $1}')"
+
+          jq -cS \
+            --arg upstream_commit "${UPSTREAM_COMMIT}" \
+            '{
+              schema: 1,
+              release_line,
+              upstream_commit: $upstream_commit,
+              source,
+              tests,
+              infrastructure,
+              vm,
+              sharding
+            }' baseline-evidence/run-metadata.json >baseline-identity.json
+          baseline_key="$(sha256sum baseline-identity.json | awk '{print $1}')"
+          [[ "${baseline_key}" =~ ^[0-9a-f]{64}$ ]]
+          release_tag="slurm-atf-baseline-${RELEASE_LINE}-${baseline_key}"
+          asset_prefix="${release_tag}"
+
+          mkdir -p release-assets
+          archive="${asset_prefix}.tar.gz"
+          tar --format=posix --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -C baseline-evidence -czf "release-assets/${archive}" .
+          archive_sha256="$(sha256sum "release-assets/${archive}" | awk '{print $1}')"
+          printf '%s  %s\n' "${archive_sha256}" "${archive}" \
+            >"release-assets/${archive}.sha256"
+
+          jq -n \
+            --arg baseline_key "${baseline_key}" \
+            --arg release_tag "${release_tag}" \
+            --arg archive "${archive}" \
+            --arg archive_sha256 "${archive_sha256}" \
+            --arg upstream_commit "${UPSTREAM_COMMIT}" \
+            --slurpfile run baseline-evidence/run-metadata.json \
+            --slurpfile identity baseline-identity.json \
+            '{
+              schema: 1,
+              baseline_key: $baseline_key,
+              release_tag: $release_tag,
+              archive: $archive,
+              archive_sha256: $archive_sha256,
+              upstream_commit: $upstream_commit,
+              identity: $identity[0],
+              run: $run[0]
+            }' >"release-assets/${asset_prefix}.json"
+
+          cat >release-assets/release-notes.md <<EOF
+          Permanent vanilla Slurm ${RELEASE_LINE} full Python ATF baseline.
+
+          - Baseline key: \`${baseline_key}\`
+          - Clean upstream commit: \`${UPSTREAM_COMMIT}\`
+          - Source and tests commit: \`${SOURCE_COMMIT}\`
+          - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Evidence archive SHA256: \`${archive_sha256}\`
+
+          This is comparison evidence, not a Slurm package release. It must
+          never be overwritten. Record \`${release_tag}\` in
+          \`nebius/ci/atf/baselines/${RELEASE_LINE}.txt\` on NB-0001.
+          EOF
+
+          {
+            echo "baseline_key=${baseline_key}"
+            echo "release_tag=${release_tag}"
+            echo "asset_prefix=${asset_prefix}"
+          } >>"${GITHUB_OUTPUT}"
+          {
+            echo "### Immutable vanilla baseline"
+            echo
+            echo "- Release tag: \`${release_tag}\`"
+            echo "- Pointer file: \`nebius/ci/atf/baselines/${RELEASE_LINE}.txt\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - id: existing
+        name: Never overwrite a published baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
+          ASSET_PREFIX: ${{ steps.package.outputs.asset_prefix }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "publish=true" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          assets="$(gh release view "${RELEASE_TAG}" --json assets --jq '.assets[].name')"
+          grep -Fxq "${ASSET_PREFIX}.tar.gz" <<<"${assets}"
+          grep -Fxq "${ASSET_PREFIX}.tar.gz.sha256" <<<"${assets}"
+          grep -Fxq "${ASSET_PREFIX}.json" <<<"${assets}"
+          mkdir -p existing-baseline
+          gh release download "${RELEASE_TAG}" \
+            --pattern "${ASSET_PREFIX}.json" \
+            --dir existing-baseline
+          descriptor="existing-baseline/${ASSET_PREFIX}.json"
+          test "$(jq -er '.release_tag' "${descriptor}")" = "${RELEASE_TAG}"
+          test "$(jq -er '.baseline_key' "${descriptor}")" = \
+            "${{ steps.package.outputs.baseline_key }}"
+          diff -u \
+            baseline-identity.json \
+            <(jq -cS '.identity' "${descriptor}")
+          echo "Baseline ${RELEASE_TAG} already exists and will not be changed."
+          echo "publish=false" >>"${GITHUB_OUTPUT}"
+
+      - if: steps.existing.outputs.publish == 'true'
+        name: Publish permanent baseline evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
+          ASSET_PREFIX: ${{ steps.package.outputs.asset_prefix }}
+        run: |
+          set -euo pipefail
+          gh release create "${RELEASE_TAG}" \
+            --target "${SOURCE_COMMIT}" \
+            --title "Slurm ${RELEASE_LINE} vanilla ATF baseline" \
+            --notes-file release-assets/release-notes.md \
+            --latest=false \
+            "release-assets/${ASSET_PREFIX}.tar.gz" \
+            "release-assets/${ASSET_PREFIX}.tar.gz.sha256" \
+            "release-assets/${ASSET_PREFIX}.json"
+
+      - name: Require GitHub to lock the published tag and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          test "$(gh release view "${RELEASE_TAG}" --json isImmutable --jq '.isImmutable')" = true

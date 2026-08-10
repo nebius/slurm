@@ -1,3 +1,13 @@
+# Nebius Slurm fork
+
+This repository is the Nebius-maintained fork of Slurm. It is used to
+develop, review, test, and carry Nebius-specific patches on top of supported
+upstream Slurm releases.
+
+The [`nebius/`](nebius/README.md) directory documents the downstream patch
+workflow and contains the registry of currently maintained Nebius changes.
+The rest of this README is the upstream Slurm project documentation.
+
 # Slurm Workload Manager
 
 This is the Slurm Workload Manager. Slurm is an open-source cluster

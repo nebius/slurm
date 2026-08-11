@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -35,6 +36,22 @@ class CompareJunitTest(unittest.TestCase):
         ET.ElementTree(suites).write(path, encoding="utf-8", xml_declaration=True)
         return path
 
+    def selection(
+        self, root: Path, path: str, change: str = "modified"
+    ) -> Path:
+        selection = root / "selection.json"
+        selection.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "policy": "changed-files-on-h200-v1",
+                    "selected_files": [{"path": path, "change": change}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return selection
+
     def test_identical_known_failure_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -56,6 +73,92 @@ class CompareJunitTest(unittest.TestCase):
             )
             self.assertFalse(result["ok"])
             self.assertEqual(len(result["changed"]), 1)
+
+    def test_passing_modified_patch_test_supersedes_frozen_regression(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = self.report(
+                root, "base.xml", [("tests/test_a.py::test_a", "passed")]
+            )
+            candidate = self.report(
+                root, "candidate.xml", [("tests/test_a.py::test_a", "failed")]
+            )
+            patch = self.report(
+                root, "patch.xml", [("tests/test_a.py::test_a", "passed")]
+            )
+            patch_files, patch_results = compare_junit.load_patch_context(
+                self.selection(root, "tests/test_a.py"), patch
+            )
+            result = compare_junit.compare(
+                compare_junit.load(baseline),
+                compare_junit.load(candidate),
+                patch_files,
+                patch_results,
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["regressions"], [])
+            self.assertEqual(len(result["superseded_regressions"]), 1)
+
+    def test_modified_patch_file_does_not_hide_unreplaced_regression(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = self.report(
+                root, "base.xml", [("tests/test_a.py::test_a", "passed")]
+            )
+            candidate = self.report(
+                root, "candidate.xml", [("tests/test_a.py::test_a", "failed")]
+            )
+            patch = self.report(
+                root, "patch.xml", [("tests/test_a.py::test_other", "passed")]
+            )
+            patch_files, patch_results = compare_junit.load_patch_context(
+                self.selection(root, "tests/test_a.py"), patch
+            )
+            result = compare_junit.compare(
+                compare_junit.load(baseline),
+                compare_junit.load(candidate),
+                patch_files,
+                patch_results,
+            )
+            self.assertFalse(result["ok"])
+            self.assertEqual(len(result["regressions"]), 1)
+            self.assertEqual(result["superseded_regressions"], [])
+
+    def test_added_patch_file_does_not_supersede_frozen_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            baseline = self.report(
+                root, "base.xml", [("tests/test_a.py::test_a", "passed")]
+            )
+            candidate = self.report(
+                root, "candidate.xml", [("tests/test_a.py::test_a", "failed")]
+            )
+            patch = self.report(
+                root, "patch.xml", [("tests/test_a.py::test_a", "passed")]
+            )
+            patch_files, patch_results = compare_junit.load_patch_context(
+                self.selection(root, "tests/test_a.py", "added"), patch
+            )
+            result = compare_junit.compare(
+                compare_junit.load(baseline),
+                compare_junit.load(candidate),
+                patch_files,
+                patch_results,
+            )
+            self.assertFalse(result["ok"])
+            self.assertEqual(patch_files, set())
+
+    def test_modified_patch_test_requires_junit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(ValueError, "require a patch JUnit"):
+                compare_junit.load_patch_context(
+                    self.selection(root, "tests/test_a.py"), None
+                )
 
     def test_changed_known_failure_to_passed_is_an_improvement(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

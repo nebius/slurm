@@ -228,10 +228,10 @@ jobs:
     if: needs.prepare.outputs.comparison_required == 'true'
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout the pinned comparison tool
+      - name: Checkout the trusted comparison tool
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.prepare.outputs.tests_commit }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -240,6 +240,12 @@ jobs:
         with:
           name: ${{ needs.run.outputs.artifact_name }}
           path: candidate-evidence
+
+      - name: Download validated patch-test evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: slurm-atf-patch-tests-${{ github.run_id }}-${{ github.run_attempt }}-gpu
+          path: patch-evidence
 
       - id: comparison
         name: Validate provenance and compare JUnit reports
@@ -299,13 +305,74 @@ jobs:
             <(jq -S . baseline-evidence/image-metadata.json) \
             <(jq -S . candidate-evidence/image-metadata.json)
 
+          patch_metadata=patch-evidence/run-metadata.json
+          patch_selection=patch-evidence/selection.json
+          patch_validation=patch-evidence/validation.json
+          test -s "${patch_metadata}"
+          test -s "${patch_selection}"
+          test -s "${patch_validation}"
+          test "$(jq -er '.schema' "${patch_metadata}")" = 1
+          test "$(jq -er '.kind' "${patch_metadata}")" = patch-tests
+          test "$(jq -er '.source.commit' "${patch_metadata}")" = \
+            "${{ needs.run.outputs.source_commit }}"
+          test "$(jq -er '.baseline_tests.commit' "${patch_metadata}")" = \
+            "${{ needs.prepare.outputs.tests_commit }}"
+          test "$(jq -er '.vm.image_id' "${patch_metadata}")" = \
+            "${{ needs.prepare.outputs.gpu_image_id }}"
+          test "$(jq -er '.vm.shape' "${patch_metadata}")" = \
+            "${{ needs.prepare.outputs.gpu_vm_shape }}"
+          test "$(jq -er '.vm.atf_profile' "${patch_metadata}")" = h200
+          test "$(jq -er '.workflow.run_id' "${patch_metadata}")" = \
+            "${GITHUB_RUN_ID}"
+          test "$(jq -er '.workflow.run_attempt' "${patch_metadata}")" = \
+            "${GITHUB_RUN_ATTEMPT}"
+          test "$(jq -er '.selection.policy' "${patch_metadata}")" = \
+            changed-files-on-h200-v1
+          test "$(jq -er '.selection.sha256' "${patch_metadata}")" = \
+            "$(sha256sum "${patch_selection}" | awk '{print $1}')"
+          test "$(jq -er '.result.validation_outcome' "${patch_metadata}")" = \
+            success
+          jq -e '.ok == true' "${patch_validation}" >/dev/null
+          jq -e \
+            '(.missing_files | length) == 0 and
+             (.unexpected_files | length) == 0 and
+             (.non_passing | length) == 0' \
+            "${patch_validation}" >/dev/null
+
+          selected_count="$(jq -er '.selected_files | length' "${patch_selection}")"
+          test "$(jq -er '.selection.files' "${patch_metadata}")" = \
+            "${selected_count}"
+          test "$(jq -er '.selected_files' "${patch_validation}")" = \
+            "${selected_count}"
+          comparison_args=(
+            baseline-evidence/junit.xml
+            candidate-evidence/junit.xml
+            --patch-selection "${patch_selection}"
+          )
+          if ((selected_count > 0)); then
+            test -s patch-evidence/junit.xml
+            test -s patch-evidence/pytest-exit-status
+            test "$(<patch-evidence/pytest-exit-status)" = 0
+            test "$(jq -er '.result.pytest_exit_status' "${patch_metadata}")" = 0
+            test "$(jq -er '.result.junit_sha256' "${patch_metadata}")" = \
+              "$(sha256sum patch-evidence/junit.xml | awk '{print $1}')"
+            comparison_args+=(--patch-junit patch-evidence/junit.xml)
+          else
+            jq -e \
+              '.result.pytest_exit_status == null and
+               .result.junit_sha256 == null' \
+              "${patch_metadata}" >/dev/null
+          fi
+
           cp "baseline-assets/${BASELINE_TAG}.json" comparison/baseline.json
           cp "${baseline}" comparison/baseline-run-metadata.json
           cp "${candidate}" comparison/candidate-run-metadata.json
+          cp "${patch_metadata}" comparison/patch-run-metadata.json
+          cp "${patch_selection}" comparison/patch-selection.json
+          cp "${patch_validation}" comparison/patch-validation.json
           set +e
           python3 nebius/ci/atf/compare_junit.py \
-            baseline-evidence/junit.xml \
-            candidate-evidence/junit.xml \
+            "${comparison_args[@]}" \
             --json comparison/comparison.json \
             --markdown comparison/comparison.md
           status=$?

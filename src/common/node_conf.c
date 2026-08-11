@@ -292,6 +292,7 @@ extern config_record_t *config_record_from_conf_node(
 	config_record_t *config_ptr;
 
 	config_ptr = create_config_record();
+	config_ptr->auto_resume = conf_node->auto_resume;
 	config_ptr->boards = conf_node->boards;
 	config_ptr->core_spec_cnt = conf_node->core_spec_cnt;
 	config_ptr->cores = conf_node->cores;
@@ -624,6 +625,7 @@ extern int expand_nodeline_info(slurm_conf_node_t *node_ptr,
 static void _init_config_record(config_record_t *config_ptr)
 {
 	config_ptr->magic = CONFIG_MAGIC;
+	config_ptr->auto_resume = true;
 	config_ptr->boards = 1;
 	config_ptr->cores = 1;
 	config_ptr->cpus = 1;
@@ -2120,6 +2122,8 @@ extern config_record_t *config_record_from_node_record(node_record_t *node_ptr)
 {
 	config_record_t *config_ptr = create_config_record();
 
+	if (node_ptr->config_ptr)
+		config_ptr->auto_resume = node_ptr->config_ptr->auto_resume;
 	config_ptr->boards = node_ptr->boards;
 	config_ptr->core_spec_cnt = node_ptr->core_spec_cnt;
 	config_ptr->mem_spec_limit = node_ptr->mem_spec_limit;

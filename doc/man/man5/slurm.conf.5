@@ -7198,6 +7198,22 @@ By default, the \fBNodeAddr\fR will be identical in value to
 .IP
 
 .TP
+\fBAutoResume\fR
+Controls whether a powered down node can be selected for a job and
+automatically powered up by Slurm.
+If set to \fBON\fR (the default), allocating a powered down node triggers the
+normal resume process.
+If set to \fBOFF\fR, the node remains unavailable to the scheduler while it is
+in the \fBPOWERED_DOWN\fR state, and jobs that require it remain pending.
+An administrator can still explicitly power up the node with
+\fBscontrol power up\fR or by setting its state to \fBPOWER_UP\fR.
+After the node registers and leaves the \fBPOWERED_DOWN\fR state, it becomes
+available for scheduling normally.
+This option may be specified for a NodeName range or inherited from a
+\fBNodeName=DEFAULT\fR record.
+.IP
+
+.TP
 \fBBcastAddr\fR
 Alternate network path to be used for sbcast network traffic to a given node.
 This name will be used as an argument to the getaddrinfo() function.

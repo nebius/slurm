@@ -60,6 +60,7 @@
 
 /* NOTE: when adding to this struct, add check to _is_dup_config_record() */
 typedef struct {
+	bool auto_resume;	/* allow scheduler-triggered power up */
 	uint16_t boards;	/* count of boards configured */
 	uint16_t core_spec_cnt;	/* number of specialized cores */
 	uint16_t cores;		/* number of cores per socket */

@@ -190,11 +190,13 @@ int s_p_handle_boolean(bool* data, const char* key, const char* value)
 	bool flag;
 
 	if (!xstrcasecmp(value, "yes")
+		|| !xstrcasecmp(value, "on")
 		|| !xstrcasecmp(value, "up")
 		|| !xstrcasecmp(value, "true")
 		|| !xstrcasecmp(value, "1")) {
 		flag = true;
 	} else if (!xstrcasecmp(value, "no")
+		   || !xstrcasecmp(value, "off")
 		   || !xstrcasecmp(value, "down")
 		   || !xstrcasecmp(value, "false")
 		   || !xstrcasecmp(value, "0")) {

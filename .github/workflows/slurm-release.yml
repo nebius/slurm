@@ -1,0 +1,309 @@
+name: Publish Nebius Slurm release
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: Full commit SHA currently at the tip of nebius/<release>
+        required: true
+        type: string
+      make_latest:
+        description: Mark this GitHub release as Latest
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: slurm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify release assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+      asset_prefix: ${{ steps.metadata.outputs.asset_prefix }}
+      release_line: ${{ steps.metadata.outputs.release_line }}
+      source_commit: ${{ steps.metadata.outputs.source_commit }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      version_string: ${{ steps.metadata.outputs.version_string }}
+    steps:
+      - name: Checkout the selected downstream release branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: metadata
+        name: Validate the release identity
+        env:
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REPOSITORY}" = nebius/slurm
+          test "${GITHUB_REF_TYPE}" = branch
+          [[ "${EXPECTED_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          test "${EXPECTED_COMMIT}" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+          mkdir -p release-assets
+          python3 nebius/ci/release/release_metadata.py \
+            --meta META \
+            --ref-name "${GITHUB_REF_NAME}" \
+            --source-commit "${GITHUB_SHA}" \
+            --json-output release-metadata.json \
+            --github-output "${GITHUB_OUTPUT}"
+
+          tag="$(jq -er '.tag' release-metadata.json)"
+          artifact_name="slurm-release-${tag}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "artifact_name=${artifact_name}"
+            echo "source_commit=${GITHUB_SHA}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Install OpenAPI build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential jq libdbus-1-dev libhttp-parser-dev \
+            libjson-c-dev libjwt-dev liblz4-dev libmunge-dev \
+            libncurses-dev libpam0g-dev libreadline-dev libssl-dev \
+            libyaml-dev libzstd-dev pkg-config
+
+      - name: Build Slurm and install slurmrestd
+        env:
+          API_CURRENT: ${{ steps.metadata.outputs.api_current }}
+          API_PREVIOUS: ${{ steps.metadata.outputs.api_previous }}
+          ASSET_PREFIX: ${{ steps.metadata.outputs.asset_prefix }}
+          EXPECTED_VERSION: ${{ steps.metadata.outputs.version_string }}
+        run: |
+          set -euo pipefail
+          build_root="${RUNNER_TEMP}/slurm-release-build"
+          install_root="${RUNNER_TEMP}/slurm-release-install"
+          nebius/ci/release/build_openapi.sh \
+            "${GITHUB_WORKSPACE}" \
+            "${build_root}" \
+            "${install_root}" \
+            "${GITHUB_WORKSPACE}/release-assets" \
+            "${ASSET_PREFIX}" \
+            "${EXPECTED_VERSION}" \
+            "${API_PREVIOUS}" \
+            "${API_CURRENT}"
+          {
+            echo "SLURM_RELEASE_INSTALL=${install_root}"
+            echo "LD_LIBRARY_PATH=${install_root}/lib"
+          } >>"${GITHUB_ENV}"
+
+      - name: Package deterministic source and release metadata
+        env:
+          ASSET_PREFIX: ${{ steps.metadata.outputs.asset_prefix }}
+        run: |
+          set -euo pipefail
+          source_archive="${ASSET_PREFIX}.tar.gz"
+          git archive \
+            --format=tar \
+            --prefix="${ASSET_PREFIX}/" \
+            "${GITHUB_SHA}" | gzip -n -9 >"release-assets/${source_archive}"
+
+          mapfile -t payloads < <(
+            find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
+          )
+          ((${#payloads[@]} == 3))
+          assets_json="$({
+            for file in "${payloads[@]}"; do
+              jq -n \
+                --arg name "${file}" \
+                --arg sha256 "$(sha256sum "release-assets/${file}" | awk '{print $1}')" \
+                --argjson size "$(stat --format='%s' "release-assets/${file}")" \
+                '{name: $name, sha256: $sha256, size: $size}'
+            done
+          } | jq -s .)"
+          jq \
+            --argjson assets "${assets_json}" \
+            '. + {assets: $assets}' \
+            release-metadata.json \
+            >"release-assets/${ASSET_PREFIX}-manifest.json"
+
+          (
+            cd release-assets
+            sha256sum \
+              "${payloads[@]}" \
+              "${ASSET_PREFIX}-manifest.json" \
+              >SHA256SUMS
+          )
+
+          cat >release-assets/release-notes.md <<EOF
+          Nebius downstream Slurm **${{ steps.metadata.outputs.version_string }}**.
+
+          - Source branch: \`${GITHUB_REF_NAME}\`
+          - Source commit: \`${GITHUB_SHA}\`
+          - Tag: \`${{ steps.metadata.outputs.tag }}\`
+          - OpenAPI data parsers: \`v0.0.${{ steps.metadata.outputs.api_previous }}\`, \`v0.0.${{ steps.metadata.outputs.api_current }}\`
+
+          The attached source archive and versioned OpenAPI schemas are covered
+          by \`SHA256SUMS\` and GitHub build-provenance attestations.
+          EOF
+
+          (cd release-assets && sha256sum -c SHA256SUMS)
+
+      - name: Attest release payload provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            release-assets/*.tar.gz
+            release-assets/*-openapi-*.json
+            release-assets/*-manifest.json
+            release-assets/SHA256SUMS
+
+      - name: Upload verified release payload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summarize the release candidate
+        run: |
+          {
+            echo "### Verified Nebius Slurm release candidate"
+            echo
+            echo "- Tag: \`${{ steps.metadata.outputs.tag }}\`"
+            echo "- Version: \`${{ steps.metadata.outputs.version_string }}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- OpenAPI: \`v0.0.${{ steps.metadata.outputs.api_previous }}\`, \`v0.0.${{ steps.metadata.outputs.api_current }}\`"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  publish:
+    name: Push tag and publish immutable release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ASSET_PREFIX: ${{ needs.build.outputs.asset_prefix }}
+      RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
+    steps:
+      - name: Checkout the verified source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.build.outputs.source_commit }}
+          fetch-depth: 0
+
+      - name: Download the verified release payload
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: release-assets
+
+      - name: Revalidate the handoff
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${SOURCE_COMMIT}"
+          test "$(jq -er '.source_commit' "release-assets/${ASSET_PREFIX}-manifest.json")" = \
+            "${SOURCE_COMMIT}"
+          test "$(jq -er '.tag' "release-assets/${ASSET_PREFIX}-manifest.json")" = \
+            "${RELEASE_TAG}"
+          test -s release-assets/release-notes.md
+          (cd release-assets && sha256sum -c SHA256SUMS)
+
+      - name: Push or verify the annotated release tag
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin \
+            "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            git fetch --force origin \
+              "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+            test "$(git rev-list -n 1 "${RELEASE_TAG}")" = "${SOURCE_COMMIT}"
+            echo "Tag ${RELEASE_TAG} already points to the verified commit."
+          else
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git tag -a "${RELEASE_TAG}" "${SOURCE_COMMIT}" \
+              -m "Nebius Slurm ${{ needs.build.outputs.version_string }}"
+            git push origin "refs/tags/${RELEASE_TAG}"
+          fi
+
+      - id: existing
+        name: Never overwrite an existing release
+        run: |
+          set -euo pipefail
+          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "publish=true" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          test "$(gh release view "${RELEASE_TAG}" --json isImmutable --jq '.isImmutable')" = true
+          mkdir -p existing-release
+          gh release download "${RELEASE_TAG}" --dir existing-release
+          expected="$({
+            find release-assets -maxdepth 1 -type f \
+              ! -name release-notes.md -printf '%f\n'
+          } | sort)"
+          actual="$(find existing-release -maxdepth 1 -type f -printf '%f\n' | sort)"
+          test "${actual}" = "${expected}"
+          while IFS= read -r name; do
+            cmp "release-assets/${name}" "existing-release/${name}"
+          done <<<"${expected}"
+          echo "Release ${RELEASE_TAG} already exists with identical immutable assets."
+          echo "publish=false" >>"${GITHUB_OUTPUT}"
+
+      - if: steps.existing.outputs.publish == 'true'
+        name: Publish the GitHub release and all assets
+        env:
+          MAKE_LATEST: ${{ inputs.make_latest }}
+        run: |
+          set -euo pipefail
+          latest=(--latest=false)
+          if [[ "${MAKE_LATEST}" == true ]]; then
+            latest=(--latest)
+          fi
+          mapfile -t assets < <(
+            find release-assets -maxdepth 1 -type f \
+              ! -name release-notes.md -print | sort
+          )
+          gh release create "${RELEASE_TAG}" \
+            --verify-tag \
+            --title "Nebius Slurm ${{ needs.build.outputs.version_string }}" \
+            --notes-file release-assets/release-notes.md \
+            "${latest[@]}" \
+            "${assets[@]}"
+
+      - name: Require immutable release protection
+        run: |
+          set -euo pipefail
+          immutable=false
+          for attempt in {1..10}; do
+            immutable="$(
+              gh release view "${RELEASE_TAG}" \
+                --json isImmutable \
+                --jq '.isImmutable'
+            )"
+            [[ "${immutable}" == true ]] && break
+            sleep 3
+          done
+          test "${immutable}" = true
+          {
+            echo "### Published immutable Nebius Slurm release"
+            echo
+            echo "- Tag: \`${RELEASE_TAG}\`"
+            echo "- Commit: \`${SOURCE_COMMIT}\`"
+            echo "- Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+          } >>"${GITHUB_STEP_SUMMARY}"

@@ -350,6 +350,10 @@ workflows are a special case: GitHub runs them only from the repository's
 default branch, so a scheduled orchestration workflow belongs on `master` and
 can explicitly check out the release branch it needs to test.
 
+The reviewed downstream branch is published with the manual release workflow.
+Repository setup, version stamping, tag naming, and artifact verification are
+documented in [`RELEASING.md`](RELEASING.md).
+
 ### ATF environment and initial smoke test
 
 The initial [`Slurm smoke test`](../.github/workflows/slurm-smoke-test.yml)

@@ -149,6 +149,51 @@ slurm_update_node ( update_node_msg_t * node_msg)
 }
 
 /*
+ * slurm_reboot_nodes - issue RPC to reboot nodes when idle,
+ *	only usable by user root
+ * IN node_list - list of nodes to reboot or ALL
+ * IN asap - ASAP option
+ * IN force - FORCE option
+ * IN next_state - next_state for the node after reboot
+ * IN reason - reason to attach to node during reboot
+ * IN power_action - PowerAction name for reboot script, or NULL for
+ *	RebootProgram
+ * RET SLURM_SUCCESS on success, otherwise return SLURM_ERROR with errno set
+ */
+extern int slurm_reboot_nodes(char *node_list, bool asap, bool force,
+			      uint32_t next_state, char *reason,
+			      char *power_action)
+{
+	int rc;
+	reboot_msg_t req;
+	slurm_msg_t msg;
+
+	slurm_msg_t_init(&msg);
+	slurm_init_reboot_msg(&req, true);
+
+	req.next_state = next_state;
+	req.node_list = node_list;
+	req.power_action_name = power_action;
+	req.reason = reason;
+	if (asap)
+		req.flags |= REBOOT_FLAGS_ASAP;
+	if (force)
+		req.flags |= REBOOT_FLAGS_FORCE;
+
+	msg.msg_type = REQUEST_REBOOT_NODES;
+	msg.data = &req;
+
+	if (slurm_send_recv_controller_rc_msg(&msg, &rc,
+					      working_cluster_rec) < 0)
+		return SLURM_ERROR;
+
+	if (rc)
+		slurm_seterrno_ret(rc);
+
+	return SLURM_SUCCESS;
+}
+
+/*
  * slurm_delete_node - issue RPC to delete a node, only usable by user root
  * IN node_msg - use to pass nodelist of names to delete
  * RET SLURM_SUCCESS on success, otherwise return SLURM_ERROR with errno set

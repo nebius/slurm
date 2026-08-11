@@ -346,6 +346,49 @@ const openapi_path_binding_t openapi_paths[] = {
 		.flags = OP_FLAGS,
 	},
 	{
+		.path = "/slurm/{data_parser}/nodes/reboot",
+		.callback = op_handler_reboot_nodes,
+		.methods = (openapi_path_binding_method_t[]) {
+			{
+				.method = HTTP_REQUEST_POST,
+				.tags = tags,
+				.summary = "reboot node(s)",
+				.response = {
+					.type = DATA_PARSER_OPENAPI_RESP,
+					.description = "node reboot request result",
+				},
+				.body = {
+					.type = DATA_PARSER_OPENAPI_REBOOT_NODES_REQ,
+					.description = "node reboot request",
+				}
+			},
+			{0}
+		},
+		.flags = OP_FLAGS,
+	},
+	{
+		.path = "/slurm/{data_parser}/node/{node_name}/reboot",
+		.callback = op_handler_reboot_node,
+		.methods = (openapi_path_binding_method_t[]) {
+			{
+				.method = HTTP_REQUEST_POST,
+				.tags = tags,
+				.summary = "reboot node",
+				.response = {
+					.type = DATA_PARSER_OPENAPI_RESP,
+					.description = "node reboot request result",
+				},
+				.parameters = DATA_PARSER_OPENAPI_NODE_PARAM,
+				.body = {
+					.type = DATA_PARSER_OPENAPI_REBOOT_NODES_REQ,
+					.description = "node reboot request",
+				}
+			},
+			{0}
+		},
+		.flags = OP_FLAGS,
+	},
+	{
 		.path = "/slurm/{data_parser}/nodes/",
 		.callback = op_handler_nodes,
 		.methods = (openapi_path_binding_method_t[]) {

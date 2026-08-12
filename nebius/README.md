@@ -119,6 +119,27 @@ release's `.gitignore` may still ignore:
 git restore --source=origin/master --staged --worktree -- testsuite
 ```
 
+The testsuite is part of the Autotools build graph. When the sync adds,
+renames, or removes a directory containing `Makefile.am` or `Makefile.in`,
+reconcile the release branch's build metadata as well:
+
+- update the corresponding test entries in `AC_CONFIG_FILES` in
+  `configure.ac`;
+- update the checked-in generated `configure` in the same commit;
+- keep each `Makefile.am` and generated `Makefile.in` pair consistent.
+
+Prefer porting the matching generated hunk from the same upstream commit. If
+the files must be regenerated locally, use the Autoconf and Automake versions
+used by that release line and review the complete generated diff.
+
+Do not copy the complete `configure.ac` from a different Slurm release line:
+it also describes product plugins and dependencies that may not exist on the
+target release. Port only the test build-graph changes that apply, together
+with their generated output. Do not create placeholder `Makefile.in` files to
+make a stale `configure` pass. The ATF and release builders intentionally run
+the checked-in `configure` without repairing missing inputs, so inconsistent
+Autotools metadata fails before a baseline or release can be published.
+
 Before merging `NB-0001`, publish the vanilla full-ATF baseline and add its
 immutable release tag to `nebius/ci/atf/baselines/26.05.txt` in the same pull
 request. The detailed procedure is in

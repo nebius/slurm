@@ -34,6 +34,7 @@ jobs:
       artifact_name: ${{ steps.metadata.outputs.artifact_name }}
       asset_prefix: ${{ steps.metadata.outputs.asset_prefix }}
       release_line: ${{ steps.metadata.outputs.release_line }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
       source_commit: ${{ steps.metadata.outputs.source_commit }}
       tag: ${{ steps.metadata.outputs.tag }}
       version_string: ${{ steps.metadata.outputs.version_string }}
@@ -48,6 +49,7 @@ jobs:
         name: Validate the release identity
         env:
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          MAKE_LATEST: ${{ inputs.make_latest }}
         run: |
           set -euo pipefail
           test "${GITHUB_REPOSITORY}" = nebius/slurm
@@ -65,6 +67,11 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
 
           tag="$(jq -er '.tag' release-metadata.json)"
+          prerelease="$(jq -er '.prerelease' release-metadata.json)"
+          if [[ "${prerelease}" == true && "${MAKE_LATEST}" == true ]]; then
+            echo "A release candidate cannot be marked as Latest." >&2
+            exit 1
+          fi
           artifact_name="slurm-release-${tag}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           {
             echo "artifact_name=${artifact_name}"
@@ -151,6 +158,7 @@ jobs:
           - Source branch: \`${GITHUB_REF_NAME}\`
           - Source commit: \`${GITHUB_SHA}\`
           - Tag: \`${{ steps.metadata.outputs.tag }}\`
+          - Prerelease: \`${{ steps.metadata.outputs.prerelease }}\`
           - OpenAPI data parsers: \`v0.0.${{ steps.metadata.outputs.api_previous }}\`, \`v0.0.${{ steps.metadata.outputs.api_current }}\`
 
           The attached source archive and versioned OpenAPI schemas are covered
@@ -184,6 +192,7 @@ jobs:
             echo "- Tag: \`${{ steps.metadata.outputs.tag }}\`"
             echo "- Version: \`${{ steps.metadata.outputs.version_string }}\`"
             echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Prerelease: \`${{ steps.metadata.outputs.prerelease }}\`"
             echo "- OpenAPI: \`v0.0.${{ steps.metadata.outputs.api_previous }}\`, \`v0.0.${{ steps.metadata.outputs.api_current }}\`"
           } >>"${GITHUB_STEP_SUMMARY}"
 
@@ -199,6 +208,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       ASSET_PREFIX: ${{ needs.build.outputs.asset_prefix }}
       RELEASE_TAG: ${{ needs.build.outputs.tag }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
       SOURCE_COMMIT: ${{ needs.build.outputs.source_commit }}
     steps:
       - name: Checkout the verified source commit
@@ -251,6 +261,8 @@ jobs:
           fi
 
           test "$(gh release view "${RELEASE_TAG}" --json isImmutable --jq '.isImmutable')" = true
+          test "$(gh release view "${RELEASE_TAG}" --json isPrerelease --jq '.isPrerelease')" = \
+            "${PRERELEASE}"
           mkdir -p existing-release
           gh release download "${RELEASE_TAG}" --dir existing-release
           expected="$({
@@ -275,6 +287,10 @@ jobs:
           if [[ "${MAKE_LATEST}" == true ]]; then
             latest=(--latest)
           fi
+          release_kind=()
+          if [[ "${PRERELEASE}" == true ]]; then
+            release_kind=(--prerelease)
+          fi
           mapfile -t assets < <(
             find release-assets -maxdepth 1 -type f \
               ! -name release-notes.md -print | sort
@@ -284,13 +300,14 @@ jobs:
             --title "Nebius Slurm ${{ needs.build.outputs.version_string }}" \
             --notes-file release-assets/release-notes.md \
             "${latest[@]}" \
+            "${release_kind[@]}" \
             "${assets[@]}"
 
       - name: Require immutable release protection
         run: |
           set -euo pipefail
           immutable=false
-          for attempt in {1..10}; do
+          for _ in {1..10}; do
             immutable="$(
               gh release view "${RELEASE_TAG}" \
                 --json isImmutable \
@@ -305,5 +322,6 @@ jobs:
             echo
             echo "- Tag: \`${RELEASE_TAG}\`"
             echo "- Commit: \`${SOURCE_COMMIT}\`"
+            echo "- Prerelease: \`${PRERELEASE}\`"
             echo "- Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
           } >>"${GITHUB_STEP_SUMMARY}"

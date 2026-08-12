@@ -48,6 +48,18 @@ version `26.05.3-nebius-1`. The separate `nebius` component prevents a Nebius
 tag from colliding with SchedMD tags. Increase the final Nebius revision only
 when publishing another downstream build of the same upstream patch version.
 
+When the corresponding SchedMD patch release is not final yet, append an RC
+suffix to `Release`:
+
+```text
+Release:  nebius-1-rc0
+```
+
+This produces tag `slurm-26-05-3-nebius-1-rc0`, runtime version
+`26.05.3-nebius-1-rc0`, and a GitHub Release marked as a prerelease. Increment
+the RC number for subsequent candidates. Drop the `-rcN` suffix for the stable
+Nebius build; do not mark a release candidate as Latest.
+
 ## Publishing
 
 1. Merge all intended patch pull requests into `nebius/<release>` and wait for
@@ -57,8 +69,8 @@ when publishing another downstream build of the same upstream patch version.
 3. In GitHub Actions, select **Publish Nebius Slurm release**, choose the
    `nebius/<release>` branch in **Run workflow**, and paste the commit into
    `expected_commit`.
-4. Select `make_latest` only when this release should become the repository's
-   Latest release.
+4. Select `make_latest` only when a stable release should become the
+   repository's Latest release. The workflow rejects this option for an RC.
 5. Review and approve the `release` environment after the build job has
    validated the candidate.
 

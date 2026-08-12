@@ -33,6 +33,16 @@ class ReleaseMetadataTest(unittest.TestCase):
         self.assertEqual(metadata["asset_prefix"], "slurm-26.05.3-nebius-1")
         self.assertEqual(metadata["version_string"], "26.05.3-nebius-1")
         self.assertEqual(metadata["api"]["parsers"], ["v0.0.44", "v0.0.45"])
+        self.assertFalse(metadata["prerelease"])
+
+    def test_derives_release_candidate_identity(self) -> None:
+        metadata = self.metadata(VALID_META.replace("nebius-1", "nebius-1-rc0"))
+        self.assertEqual(metadata["tag"], "slurm-26-05-3-nebius-1-rc0")
+        self.assertEqual(
+            metadata["asset_prefix"], "slurm-26.05.3-nebius-1-rc0"
+        )
+        self.assertEqual(metadata["version_string"], "26.05.3-nebius-1-rc0")
+        self.assertTrue(metadata["prerelease"])
 
     def test_rejects_non_release_branch(self) -> None:
         with self.assertRaisesRegex(ValueError, "release ref"):
@@ -45,6 +55,10 @@ class ReleaseMetadataTest(unittest.TestCase):
     def test_rejects_upstream_release_value(self) -> None:
         with self.assertRaisesRegex(ValueError, "META Release"):
             self.metadata(VALID_META.replace("nebius-1", "1"))
+
+    def test_rejects_release_candidate_without_number(self) -> None:
+        with self.assertRaisesRegex(ValueError, "META Release"):
+            self.metadata(VALID_META.replace("nebius-1", "nebius-1-rc"))
 
     def test_rejects_inconsistent_version(self) -> None:
         with self.assertRaisesRegex(ValueError, "META Version"):

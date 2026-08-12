@@ -19,33 +19,6 @@ api_current="$8"
 [[ "${api_current}" =~ ^[0-9]+$ ]]
 ((api_previous + 1 == api_current))
 
-topology_dir="${source_dir}/testsuite/slurm_unit/topology"
-topology_makefile="${topology_dir}/Makefile.in"
-temporary_topology=false
-
-cleanup() {
-	if [[ "${temporary_topology}" == true ]]; then
-		rm -f "${topology_makefile}"
-		rmdir "${topology_dir}" 2>/dev/null || true
-	fi
-}
-trap cleanup EXIT
-
-# NB-0001 synchronizes the master testsuite while preserving the release
-# configure script. Slurm 26.05 therefore still asks for this removed input.
-if grep -Fq 'testsuite/slurm_unit/topology/Makefile' \
-	"${source_dir}/configure" && [[ ! -e "${topology_makefile}" ]]; then
-	if grep -Eq '(^|[[:space:]])topology([[:space:]]|$)' \
-		"${source_dir}/testsuite/slurm_unit/Makefile.am"; then
-		echo "Refusing to mask an active topology build input" >&2
-		exit 1
-	fi
-	mkdir -p "${topology_dir}"
-	printf '%s\n' '# Temporary release configure compatibility input.' \
-		>"${topology_makefile}"
-	temporary_topology=true
-fi
-
 mkdir -p "${build_root}" "${install_root}" "${asset_dir}"
 cd "${build_root}"
 "${source_dir}/configure" \

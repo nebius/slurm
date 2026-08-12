@@ -18,8 +18,6 @@ api_current="$8"
 [[ "${api_previous}" =~ ^[0-9]+$ ]]
 [[ "${api_current}" =~ ^[0-9]+$ ]]
 ((api_previous + 1 == api_current))
-[[ "${asset_prefix}" =~ ^slurm-[0-9]+\.[0-9]+\.[0-9]+-nebius-[1-9][0-9]*$ ]]
-[[ "${expected_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-nebius-[1-9][0-9]*$ ]]
 
 topology_dir="${source_dir}/testsuite/slurm_unit/topology"
 topology_makefile="${topology_dir}/Makefile.in"

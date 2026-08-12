@@ -154,49 +154,6 @@ ensure_lmod_command() {
 		sh -c 'command -v lmod >/dev/null 2>&1'
 }
 
-legacy_topology_makefile=""
-legacy_topology_dir_created=false
-
-prepare_release_configure_compat() {
-	local topology_dir="${source_dir}/testsuite/slurm_unit/topology"
-	local topology_makefile="${topology_dir}/Makefile.in"
-
-	# The 26.05 release configure script still emits a Makefile for the old
-	# topology unit-test directory. That test was removed on master, so an
-	# NB-0001 testsuite sync intentionally removes its Makefile.in while the
-	# otherwise vanilla release configure script continues to require it.
-	if ! grep -Fq 'testsuite/slurm_unit/topology/Makefile' \
-		"${source_dir}/configure" || [[ -e "${topology_makefile}" ]]; then
-		return
-	fi
-	if grep -Eq '(^|[[:space:]])topology([[:space:]]|$)' \
-		"${source_dir}/testsuite/slurm_unit/Makefile.am"; then
-		echo "Refusing to mask a missing topology Makefile.in for a topology directory that is still built" >&2
-		return 1
-	fi
-
-	if [[ ! -d "${topology_dir}" ]]; then
-		mkdir -p "${topology_dir}"
-		legacy_topology_dir_created=true
-	fi
-	printf '%s\n' \
-		'# Temporary compatibility input for a release configure script.' \
-		>"${topology_makefile}"
-	legacy_topology_makefile="${topology_makefile}"
-}
-
-cleanup_release_configure_compat() {
-	if [[ -z "${legacy_topology_makefile}" ]]; then
-		return
-	fi
-	rm -f "${legacy_topology_makefile}"
-	if [[ "${legacy_topology_dir_created}" == true ]]; then
-		rmdir "$(dirname "${legacy_topology_makefile}")"
-	fi
-	legacy_topology_makefile=""
-	legacy_topology_dir_created=false
-}
-
 prepare_release_build_compat() {
 	local testsuite_makefile="${build_dir}/testsuite/Makefile"
 	local synced_subdirs='SUBDIRS = expect slurm_unit'
@@ -219,8 +176,6 @@ prepare_release_build_compat() {
 }
 
 prepare_build() {
-	local configure_status=0
-
 	mkdir -p "${build_dir}" "${output_dir}"
 	sudo install -d -o root -g root -m 0755 "${install_dir}"
 	sudo find "${install_dir}" -mindepth 1 -delete
@@ -240,7 +195,6 @@ prepare_build() {
 		nvml_args+=(--with-nvml=/usr/local/cuda)
 	fi
 
-	prepare_release_configure_compat
 	cd "${build_dir}"
 	PKG_CONFIG_PATH="${pmix_prefix}/lib/pkgconfig" \
 	CPPFLAGS="-I${bpf_root}/include" \
@@ -262,11 +216,7 @@ prepare_build() {
 		--with-bpf="${bpf_root}" \
 		--with-lua \
 		--with-freeipmi=/usr \
-		CFLAGS="-O2 -g3 -fno-omit-frame-pointer" || configure_status=$?
-	cleanup_release_configure_compat
-	if ((configure_status != 0)); then
-		return "${configure_status}"
-	fi
+		CFLAGS="-O2 -g3 -fno-omit-frame-pointer"
 	prepare_release_build_compat
 
 	make -j"${jobs}"

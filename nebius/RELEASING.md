@@ -60,6 +60,23 @@ This produces tag `slurm-26-05-3-nebius-1-rc0`, runtime version
 the RC number for subsequent candidates. Drop the `-rcN` suffix for the stable
 Nebius build; do not mark a release candidate as Latest.
 
+`META` does not set the Debian package version. In the same release-stamp
+commit, prepend a matching entry to `debian/changelog`. A stable release uses:
+
+```text
+slurm-smd (26.05.3-nebius-1) UNRELEASED; urgency=medium
+```
+
+An RC uses Debian's `~` prerelease separator:
+
+```text
+slurm-smd (26.05.3-nebius-1~rc0) UNRELEASED; urgency=medium
+```
+
+Increment the runtime RC in `META` and the Debian RC together. This makes
+Debian sort the packages as `rc0 < rc1 < stable` and lets packaging consume
+the release archive without rewriting its changelog.
+
 ## Publishing
 
 1. Merge all intended patch pull requests into `nebius/<release>` and wait for

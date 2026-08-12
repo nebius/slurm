@@ -30,6 +30,14 @@ git restore --source=origin/master --staged --worktree -- \
   nebius/RELEASING.md
 ```
 
+The release workflow treats the checked-in Autotools output as part of the
+release source. A testsuite sync that changes `Makefile.am` or `Makefile.in`
+must include the matching `AC_CONFIG_FILES` update in `configure.ac` and the
+corresponding generated `configure` change. Never compensate for a stale
+`configure` by creating a missing input during CI. The OpenAPI build runs
+`configure` before packaging the source archive and deliberately fails when
+the generated build graph references an input that is not present.
+
 ## Release identity
 
 The workflow derives the release identity exclusively from `META`. A stable

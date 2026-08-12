@@ -317,12 +317,14 @@ it to `nebius-2`. When SchedMD updates the branch to `26.05.4`, take its new
 An upstream sync will commonly touch `META`, so resolving this small conflict
 is an explicit part of refreshing the version-stamp patch.
 
-RPM and Debian package versions must express the same downstream revision in
-their own metadata (`slurm.spec` and `debian/changelog`), but their version
-grammars are not identical to the runtime string. Update and validate those
-files in the packaging workflow instead of blindly copying `nebius-1` into
-every package field. The `META` change alone is sufficient for source builds
-and the version printed by Slurm binaries.
+The same release-stamp patch must prepend a matching entry to
+`debian/changelog`; do not defer the source package identity to a downstream
+packaging workflow. Debian version ordering uses `~` for prereleases, so the
+corresponding versions are `26.05.3-nebius-1~rc0` for an RC and
+`26.05.3-nebius-1` for the stable build. This preserves the ordering
+`rc0 < rc1 < stable` while `META` continues to use the runtime form
+`nebius-1-rcN`. Update `slurm.spec` as well when RPM packages are produced;
+its version grammar is separate from both forms.
 
 ## Porting to a new Slurm release
 

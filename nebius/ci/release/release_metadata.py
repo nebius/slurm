@@ -11,7 +11,9 @@ from pathlib import Path
 
 FIELD_RE = re.compile(r"^\s*([A-Za-z_]+):\s*(\S+)\s*$")
 RELEASE_BRANCH_RE = re.compile(r"^nebius/(\d+\.\d+)$")
-DOWNSTREAM_RELEASE_RE = re.compile(r"^nebius-[1-9]\d*$")
+DOWNSTREAM_RELEASE_RE = re.compile(
+    r"^nebius-(?P<revision>[1-9]\d*)(?:-rc(?P<release_candidate>\d+))?$"
+)
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -52,8 +54,12 @@ def release_metadata(meta_path: Path, ref_name: str, source_commit: str) -> dict
         raise ValueError(
             f"release branch {ref_name} does not match META release line {release_line}"
         )
-    if not DOWNSTREAM_RELEASE_RE.fullmatch(fields["release"]):
-        raise ValueError("META Release must match nebius-<positive revision>")
+    release_match = DOWNSTREAM_RELEASE_RE.fullmatch(fields["release"])
+    if not release_match:
+        raise ValueError(
+            "META Release must match nebius-<positive revision>[-rc<number>]"
+        )
+    prerelease = release_match.group("release_candidate") is not None
 
     api_current = int(fields["api_current"])
     if api_current < 2:
@@ -78,6 +84,7 @@ def release_metadata(meta_path: Path, ref_name: str, source_commit: str) -> dict
         "release_line": release_line,
         "version": version,
         "downstream_release": fields["release"],
+        "prerelease": prerelease,
         "version_string": f"{version}-{fields['release']}",
         "tag": tag,
         "asset_prefix": asset_prefix,
@@ -95,6 +102,7 @@ def write_github_output(path: Path, metadata: dict) -> None:
         "release_line": metadata["release_line"],
         "version": metadata["version"],
         "downstream_release": metadata["downstream_release"],
+        "prerelease": str(metadata["prerelease"]).lower(),
         "version_string": metadata["version_string"],
         "api_current": metadata["api"]["current"],
         "api_previous": metadata["api"]["current"] - 1,

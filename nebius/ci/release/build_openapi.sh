@@ -19,6 +19,27 @@ api_current="$8"
 [[ "${api_current}" =~ ^[0-9]+$ ]]
 ((api_previous + 1 == api_current))
 
+validate_testsuite_makefiles() {
+	local generated makefile_am missing=0 relative
+
+	while IFS= read -r -d '' makefile_am; do
+		relative="${makefile_am#"${source_dir}/"}"
+		generated="${relative%.am}"
+		if [[ ! -f "${build_root}/${generated}" ]]; then
+			echo "configure did not generate ${generated} for ${relative}" >&2
+			missing=1
+		fi
+	done < <(
+		find "${source_dir}/testsuite" -type f -name Makefile.am -print0 |
+			sort -z
+	)
+
+	if ((missing)); then
+		echo "Testsuite Autotools inputs are incomplete; update configure.ac and configure." >&2
+		return 1
+	fi
+}
+
 mkdir -p "${build_root}" "${install_root}" "${asset_dir}"
 cd "${build_root}"
 "${source_dir}/configure" \
@@ -30,6 +51,7 @@ cd "${build_root}"
 	--with-munge=/usr \
 	--with-yaml=/usr \
 	CFLAGS='-O2 -g'
+validate_testsuite_makefiles
 make --no-print-directory -s -C src -j"$(nproc)"
 make --no-print-directory -s -C src install
 

@@ -35,8 +35,10 @@ release source. A testsuite sync that changes `Makefile.am` or `Makefile.in`
 must include the matching `AC_CONFIG_FILES` update in `configure.ac` and the
 corresponding generated `configure` change. Never compensate for a stale
 `configure` by creating a missing input during CI. The OpenAPI build runs
-`configure` before packaging the source archive and deliberately fails when
-the generated build graph references an input that is not present.
+`configure` before packaging the source archive and verifies that it emits a
+build-directory `Makefile` for every `testsuite/**/Makefile.am`. It deliberately
+fails when the generated build graph references an input that is not present
+or omits a synchronized testsuite directory.
 
 ## Release identity
 

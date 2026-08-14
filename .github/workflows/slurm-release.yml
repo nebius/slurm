@@ -67,7 +67,8 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
 
           tag="$(jq -er '.tag' release-metadata.json)"
-          prerelease="$(jq -er '.prerelease' release-metadata.json)"
+          prerelease="$(jq -r '.prerelease' release-metadata.json)"
+          [[ "${prerelease}" == true || "${prerelease}" == false ]]
           if [[ "${prerelease}" == true && "${MAKE_LATEST}" == true ]]; then
             echo "A release candidate cannot be marked as Latest." >&2
             exit 1

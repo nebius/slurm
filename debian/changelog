@@ -1,5 +1,5 @@
-slurm-smd (26.05.3-nebius-1) UNRELEASED; urgency=medium
+slurm-smd (26.05.3-nebius-2) UNRELEASED; urgency=medium
 
-  * Build Nebius Slurm 26.05.3-nebius-1.
+  * Build Nebius Slurm 26.05.3-nebius-2.
 
- -- Dzmitry Amialiusik <amialiusik@nebius.com>  Fri, 14 Aug 2026 14:07:07 +0200
+ -- Dzmitry Amialiusik <amialiusik@nebius.com>  Fri, 14 Aug 2026 16:55:44 +0200

@@ -835,7 +835,15 @@ extern resource_allocation_response_msg_t *build_alloc_msg(
 					xstrdup(job_ptr->details->env_sup[i]);
 			}
 		}
-		if (job_ptr->bit_flags & STEPMGR_ENABLED) {
+		/*
+		 * Only advertise the stepmgr once batch_host is known. For a
+		 * powered-down cloud node batch_host is still NULL here, and
+		 * setting SLURM_STEPMGR to a NULL value stringifies to the
+		 * literal "(null)" - leave it unset so step creation is routed
+		 * through the controller (which reroutes once the node is up).
+		 */
+		if ((job_ptr->bit_flags & STEPMGR_ENABLED) &&
+		    job_ptr->batch_host) {
 			env_array_overwrite(&alloc_msg->environment,
 					    "SLURM_STEPMGR",
 					    job_ptr->batch_host);
@@ -4024,6 +4032,7 @@ static void _slurm_rpc_submit_batch_het_job(slurm_msg_t *msg)
 	hostset_t *jobid_hostset = NULL;
 	char tmp_str[32];
 	char *het_job_id_set = NULL;
+	bool het_leader_external = false;
 
 	START_TIMER;
 	if (!job_req_list || (list_count(job_req_list) == 0)) {
@@ -4111,6 +4120,24 @@ static void _slurm_rpc_submit_batch_het_job(slurm_msg_t *msg)
 			break;
 		}
 
+		/* If the leader is external all components must be external. */
+		if (!het_job_offset) {
+			het_leader_external =
+				(job_desc_msg->bitflags & EXTERNAL_JOB);
+		} else if (het_leader_external &&
+			   !(job_desc_msg->bitflags & EXTERNAL_JOB)) {
+			xstrfmtcat(
+				job_submit_user_msg,
+				"%s%d: non-external component cannot follow an external hetjob leader",
+				job_submit_user_msg ? "\n" : "",
+				het_job_offset);
+			error("REQUEST_SUBMIT_BATCH_HET_JOB from uid=%u, non-external component with an external hetjob leader",
+			      msg->auth_uid);
+			error_code = ESLURM_INVALID_EXTERNAL_JOB;
+			reject_job = true;
+			break;
+		}
+
 		/* license request allowed only on leader */
 		if (het_job_offset && job_desc_msg->licenses) {
 			xstrfmtcat(job_submit_user_msg,
@@ -4152,7 +4179,7 @@ static void _slurm_rpc_submit_batch_het_job(slurm_msg_t *msg)
 	START_TIMER;	/* Restart after we have locks */
 	iter = list_iterator_create(job_req_list);
 	while ((job_desc_msg = list_next(iter))) {
-		if (!script)
+		if (!het_job_offset)
 			script = xstrdup(job_desc_msg->script);
 		if (het_job_offset && job_desc_msg->script) {
 			info("%s: Hetjob %u offset %u has script, being ignored",
@@ -4168,7 +4195,8 @@ static void _slurm_rpc_submit_batch_het_job(slurm_msg_t *msg)
 			job_desc_msg->mail_type = 0;
 			xfree(job_desc_msg->mail_user);
 		}
-		if (!job_desc_msg->burst_buffer) {
+		if (!(job_desc_msg->bitflags & EXTERNAL_JOB) &&
+		    !job_desc_msg->burst_buffer) {
 			xfree(job_desc_msg->script);
 			if (!(job_desc_msg->script = bb_g_build_het_job_script(
 				      script, het_job_offset))) {
@@ -4210,7 +4238,8 @@ static void _slurm_rpc_submit_batch_het_job(slurm_msg_t *msg)
 				jobid_hostset = hostset_create(tmp_str);
 			job_ptr->het_job_id = step_id.job_id;
 			job_ptr->het_job_offset = het_job_offset++;
-			job_ptr->batch_flag      = 1;
+			if (!(job_ptr->bit_flags & EXTERNAL_JOB))
+				job_ptr->batch_flag = 1;
 			on_job_state_change(job_ptr, job_ptr->job_state);
 			_het_job_val_add(job_ptr);
 			list_append(submit_job_list, job_ptr);

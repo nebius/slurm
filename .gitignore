@@ -88,5 +88,6 @@ tags
 # Local credentials
 credentials.json
 
-# Local SSH key used by CI
+# Local SSH keys used by CI
 slurm-atf-ci
+slurm-atf-ci.pub

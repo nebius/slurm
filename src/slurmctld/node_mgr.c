@@ -3659,17 +3659,20 @@ extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up)
 
 	/*
 	 * Apply slurmd-supplied fields (extra, instance_id, instance_type,
-	 * topology) when slurmd's reported boot_time is later than the
-	 * last time we successfully heard from the node. This fires on the
-	 * first registration (last_response == 0) and on an actual node
-	 * reboot (the same condition the reboot-detection branch below
-	 * uses to mark the node "unexpectedly rebooted"). Steady-state
-	 * pings and slurmd restarts without an actual reboot have
+	 * topology) after a power up or when slurmd's reported boot_time is
+	 * later than the last time we successfully heard from the node.
+	 * The timestamp check fires on first registration (last_response == 0)
+	 * and on an actual reboot, matching the reboot-detection branch below.
+	 * Steady-state pings and slurmd restarts without an actual reboot have
 	 * boot_time < last_response and are skipped, so admin overrides
 	 * via scontrol update node ... are not clobbered. last_response is
 	 * state-saved, so the gate also survives slurmctld restart.
+	 * Power transitions must be checked explicitly: the POWERING_UP
+	 * handling above already set last_response to now. Registration from
+	 * POWERED_DOWN may also report the uptime of an existing host.
 	 */
-	if (node_ptr->boot_time > node_ptr->last_response) {
+	if (was_powering_up || was_powered_down ||
+	    (node_ptr->boot_time > node_ptr->last_response)) {
 		bool update_db = false;
 
 		if (reg_msg->extra) {

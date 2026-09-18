@@ -7,9 +7,9 @@
   Name:		slurm
   Major:	26
   Minor:	05
-  Micro:	3
-  Version:	26.05.3
-  Release:	nebius-2
+  Micro:	4
+  Version:	26.05.4
+  Release:	nebius-1
 
 ##
 #  When making a new Major/Minor version update

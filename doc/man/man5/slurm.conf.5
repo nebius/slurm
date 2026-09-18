@@ -5898,7 +5898,7 @@ timed out. Defaults to the value of \fBMessageTimeout\fR.
 .TP
 \fBcontain_spank\fR
 If set and a namespace plugin is specified, the spank_user(),
-spank_task_post_fork() and spank_task_exit() calls will be run inside the job's
+spank_task_post_fork(), and spank_task_exit() calls will be run inside the job's
 namespace.
 .IP
 
@@ -5936,7 +5936,7 @@ mismatch between what slurmd detects and what the controller expects.
 .TP
 \fBshutdown_on_reboot\fR
 If set, the Slurmd will shut itself down when a reboot request is received.
-.IP
+.RE
 .IP
 
 .TP
@@ -6821,15 +6821,24 @@ Default security policy is "20230317", which is FIPS compliant and includes TLS 
 
 .TP
 \fBTLSType\fR
-Specify the TLS implementation that will be used. Unset by default.
+Specify the TLS implementation that will be used.
+When set to a TLS plugin, RPC listening sockets reject connections that are not
+TLS wrapped. Refer to the TLS guide for more details:
+<https://slurm.schedmd.com/tls.html>
+Defaults to \fBtls/none\fR.
+.br
 Acceptable values at present:
 .IP
 .RS
 .TP
+\fBtls/none\fR
+No TLS. This is the default.
+.IP
+
+.TP
 \fBtls/s2n\fR
 Use the s2n TLS plugin. Requires additional configuration and causes significant
-processing overhead, but allows all Slurm communication to be encrypted. Refer
-to the TLS guide for more details: <https://slurm.schedmd.com/tls.html>
+processing overhead, but allows all Slurm communication to be encrypted.
 .RE
 .IP
 
@@ -8486,6 +8495,11 @@ environment variables.
 .TP
 \fBSLURM_JOB_ID\fR
 Job ID.
+.IP
+
+.TP
+\fBSLURM_JOB_SLUID\fR
+Job SLUID.
 .IP
 
 .TP

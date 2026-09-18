@@ -10,6 +10,7 @@ Slurm releases.
 | [NB-0002](patches/NB-0002-topology-block-blocks-nodes-bitmap.md) | Keep a node in the `topology/block` aggregate bitmap when its topology is re-applied unchanged | NB-0001 | not submitted | nebius/26.05 |
 | [NB-0003](patches/NB-0003-reboot-rest-api.md) | Add node reboot operations to the Slurm REST API | NB-0001 | not submitted | nebius/26.05 |
 | [NB-0004](patches/NB-0004-disable-auto-resume.md) | Keep selected powered-down nodes from being resumed automatically by scheduling | NB-0001 | not submitted | nebius/26.05 |
+| [NB-0005](patches/NB-0005-cloud-registration-fields.md) | Refresh slurmd-supplied topology and instance metadata when a CLOUD node powers up | NB-0001 | not submitted | nebius/26.05 |
 
 Possible upstream statuses include `not submitted`, a link to the upstream
 issue or pull request, and `upstream since <release>`.

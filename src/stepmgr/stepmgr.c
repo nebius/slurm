@@ -73,6 +73,7 @@
 #include "src/interfaces/gres.h"
 #include "src/interfaces/jobacct_gather.h"
 #include "src/interfaces/mcs.h"
+#include "src/interfaces/mpi.h"
 #include "src/interfaces/select.h"
 #include "src/interfaces/switch.h"
 #include "src/interfaces/topology.h"
@@ -788,6 +789,33 @@ typedef struct {
 	time_t max_age;
 } wake_steps_args_t;
 
+/*
+ * Find the job a step create request is for.
+ *
+ * srun resolves --jobid=<array_job_id>_<task_id> to the task's own job id, but
+ * a het step still carries the task id. A task that runs under its own job id
+ * is not found by its array job id, so also accept the job found by its own id
+ * when it is that task.
+ */
+static job_record_t *_find_step_req_job(slurm_step_id_t *step_id,
+					uint32_t array_task_id)
+{
+	job_record_t *job_ptr;
+
+	if (array_task_id == NO_VAL)
+		return stepmgr_ops->find_job(step_id);
+
+	if ((job_ptr = stepmgr_ops->find_job_array_rec(step_id->job_id,
+						       array_task_id)))
+		return job_ptr;
+
+	if ((job_ptr = stepmgr_ops->find_job(step_id)) &&
+	    (job_ptr->array_task_id == array_task_id))
+		return job_ptr;
+
+	return NULL;
+}
+
 static int _wake_steps(void *x, void *arg)
 {
 	step_record_t *pend_step_ptr = x;
@@ -812,14 +840,8 @@ static int _wake_steps(void *x, void *arg)
 			debug2("Attempting launching of pending async step");
 			_dump_step_desc(step_req);
 
-			if (step_req->array_task_id != NO_VAL) {
-				job_ptr = stepmgr_ops->find_job_array_rec(
-					pend_step_ptr->step_id.job_id,
-					step_req->array_task_id);
-			} else {
-				job_ptr = stepmgr_ops->find_job(
-					&pend_step_ptr->step_id);
-			}
+			job_ptr = _find_step_req_job(&pend_step_ptr->step_id,
+						     step_req->array_task_id);
 
 			/*
 			 * We hold the lock so it shouldn't be possible for a
@@ -883,6 +905,13 @@ static int _wake_steps(void *x, void *arg)
 				job_ptr->start_protocol_ver;
 			step_req->use_protocol_ver =
 				job_ptr->start_protocol_ver;
+			/*
+			 * Set to "none" when not set, to prevent
+			 * mpi_g_client_init() setting to MpiDefault.
+			 */
+			if (!step_req->launch_params->mpi_plugin_name)
+				step_req->launch_params->mpi_plugin_name =
+					xstrdup("none");
 
 			ctx = _step_ctx_create_stepmgr(step_req, step_resp,
 						       new_step_ptr);
@@ -5449,12 +5478,8 @@ extern int step_create_from_msg(slurm_msg_t *msg, int slurmd_fd,
 		lock_func(true);
 	}
 
-	if (req_step_msg->array_task_id != NO_VAL)
-		job_ptr = stepmgr_ops->find_job_array_rec(
-			req_step_msg->step_id.job_id,
-			req_step_msg->array_task_id);
-	else
-		job_ptr = stepmgr_ops->find_job(&req_step_msg->step_id);
+	job_ptr = _find_step_req_job(&req_step_msg->step_id,
+				     req_step_msg->array_task_id);
 
 	if (job_ptr == NULL) {
 		error_code = ESLURM_INVALID_JOB_ID ;
@@ -5496,7 +5521,9 @@ extern int step_create_from_msg(slurm_msg_t *msg, int slurmd_fd,
 	    (running_in_slurmctld() ||
 	     req_step_msg->immediate ||
 	     !req_step_msg->launch_params ||
-	     req_step_msg->launch_params->pty)) {
+	     req_step_msg->launch_params->pty ||
+	     !mpi_is_none_plugin(req_step_msg->launch_params
+					 ->mpi_plugin_name))) {
 		error("Invalid async step create request");
 		error_code = ESLURM_INVALID_FEATURE;
 		goto end_it;
@@ -5617,6 +5644,13 @@ end_it:
 
 			req_step_msg->use_protocol_ver =
 				step_rec->start_protocol_ver;
+			/*
+			 * Set to "none" when not set, to prevent
+			 * mpi_g_client_init() setting to MpiDefault.
+			 */
+			if (!req_step_msg->launch_params->mpi_plugin_name)
+				req_step_msg->launch_params->mpi_plugin_name =
+					xstrdup("none");
 			ctx = _step_ctx_create_stepmgr(req_step_msg,
 						       &job_step_resp,
 						       step_rec);
@@ -5706,6 +5740,7 @@ extern int pack_job_step_info_response_msg(pack_step_args_t *args)
 		set_buf_offset(args->buffer, tmp_offset);
 	}
 
+	FREE_NULL_LIST(args->stepmgr_jobs);
 	xfree(args->visible_parts);
 
 	return error_code;

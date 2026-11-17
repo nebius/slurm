@@ -988,7 +988,35 @@ static void _create_het_job_id_set(hostset_t *jobid_hostset,
 }
 
 /*
+ * _het_job_val_init_qos - Create usage_het on a QOS that is not shared yet.
+ */
+static void _het_job_val_init_qos(slurmdb_qos_rec_t *qos_ptr)
+{
+	if (qos_ptr && !qos_ptr->usage_het)
+		qos_ptr->usage_het =
+			slurmdb_create_qos_usage(slurmctld_tres_cnt);
+}
+
+/*
+ * _het_job_val_fini_qos - Free usage_het of a QOS, if any.
+ */
+static void _het_job_val_fini_qos(slurmdb_qos_rec_t *qos_ptr)
+{
+	if (qos_ptr && qos_ptr->usage_het) {
+		slurmdb_destroy_qos_usage(qos_ptr->usage_het);
+		qos_ptr->usage_het = NULL;
+	}
+}
+
+/*
  * _het_job_val_init - Set up usage_het on the assoc tree and QOS..
+ *
+ * The simulated JOB_BEGIN/JOB_FINI of a component charges both the job's QOS
+ * and its partition's QOS (see acct_policy_set_qos_order()). Both need their
+ * usage_het here, before the component is simulated. A QOS that only gets its
+ * usage_het from a later component would have the earlier component's
+ * JOB_BEGIN charged to the real usage and its JOB_FINI taken from usage_het,
+ * leaking the real usage.
  */
 static void _het_job_val_init(job_record_t *job_ptr)
 {
@@ -1005,9 +1033,9 @@ static void _het_job_val_init(job_record_t *job_ptr)
 		assoc_ptr = assoc_ptr->usage->parent_assoc_ptr;
 	}
 
-	if (job_ptr->qos_ptr && !job_ptr->qos_ptr->usage_het)
-		job_ptr->qos_ptr->usage_het =
-			slurmdb_create_qos_usage(slurmctld_tres_cnt);
+	_het_job_val_init_qos(job_ptr->qos_ptr);
+	if (job_ptr->part_ptr)
+		_het_job_val_init_qos(job_ptr->part_ptr->qos_ptr);
 }
 
 /*
@@ -1023,10 +1051,9 @@ static void _het_job_val_fini(job_record_t *job_ptr)
 		assoc_ptr = assoc_ptr->usage->parent_assoc_ptr;
 	}
 
-	if (job_ptr->qos_ptr && job_ptr->qos_ptr->usage_het) {
-		slurmdb_destroy_qos_usage(job_ptr->qos_ptr->usage_het);
-		job_ptr->qos_ptr->usage_het = NULL;
-	}
+	_het_job_val_fini_qos(job_ptr->qos_ptr);
+	if (job_ptr->part_ptr)
+		_het_job_val_fini_qos(job_ptr->part_ptr->qos_ptr);
 }
 
 /*
@@ -1068,7 +1095,12 @@ static int _het_job_val_rem_each(void *x, void *arg)
 	xassert(job_ptr->tres_alloc_cnt == job_ptr->tres_req_cnt);
 	job_ptr->tres_alloc_cnt = NULL;
 
-	_het_job_val_fini(job_ptr);
+	return 0;
+}
+
+static int _het_job_val_fini_each(void *x, void *arg)
+{
+	_het_job_val_fini(x);
 
 	return 0;
 }
@@ -1077,15 +1109,18 @@ static int _het_job_val_rem_each(void *x, void *arg)
  * _het_job_val_rem - Undo every from _het_job_val_add()
  *	for the current het RPC (success or failure). Walks submit_job_list;
  *	jobs with non-NULL tres_alloc_cnt get JOB_FINI then tres_alloc_cnt
- *	cleared (alias to tres_req_cnt is not freed). Caller must hold the same
- *	locks as for job_allocate / other acct_policy_* calls with assoc_locked
- *	false.
+ *	cleared (alias to tres_req_cnt is not freed). Then frees usage_het for
+ *	every component. Components can share usage_het, so it must not be
+ *	freed until every JOB_FINI is done, or the rest would hit the real
+ *	usage. Caller must hold the same locks as for job_allocate / other
+ *	acct_policy_* calls with assoc_locked false.
  */
 static void _het_job_val_rem(list_t *submit_job_list)
 {
 	xassert(submit_job_list);
 
 	(void) list_for_each(submit_job_list, _het_job_val_rem_each, NULL);
+	(void) list_for_each(submit_job_list, _het_job_val_fini_each, NULL);
 }
 
 /*
@@ -1124,6 +1159,7 @@ static void _slurm_rpc_allocate_het_job(slurm_msg_t *msg)
 	slurmctld_lock_t job_write_lock = {
 		READ_LOCK, WRITE_LOCK, WRITE_LOCK, READ_LOCK, READ_LOCK };
 	job_record_t *job_ptr, *first_job_ptr = NULL;
+	job_record_t *val_reject_job_ptr = NULL;
 	char *err_msg = NULL, **job_submit_user_msg = NULL;
 	list_itr_t *iter;
 	list_t *submit_job_list = NULL;
@@ -1252,7 +1288,7 @@ static void _slurm_rpc_allocate_het_job(slurm_msg_t *msg)
 		_het_job_val_init(job_ptr);
 		if (!_het_job_component_acct_policy_runnable(job_ptr)) {
 			error_code = ESLURM_ACCOUNTING_POLICY;
-			_het_job_val_fini(job_ptr);
+			val_reject_job_ptr = job_ptr;
 			break;
 		}
 
@@ -1293,6 +1329,14 @@ static void _slurm_rpc_allocate_het_job(slurm_msg_t *msg)
 	xfree(het_job_id_set);
 
 	_het_job_val_rem(submit_job_list);
+	if (val_reject_job_ptr) {
+		_het_job_val_fini(val_reject_job_ptr);
+		/*
+		 * Not a het job component, so it must not be in the leader's
+		 * het_job_list. Cancel it on its own.
+		 */
+		(void) _het_job_cancel(val_reject_job_ptr, NULL);
+	}
 
 	if (error_code) {
 		/* Cancel remaining job records */
@@ -2603,10 +2647,11 @@ fini:
 	    (job_ptr->bit_flags & STEPMGR_ENABLED) && IS_JOB_RUNNING(job_ptr)) {
 		stepmgr_job_info_t *sji = xmalloc(sizeof(*sji));
 		if (!args->stepmgr_jobs)
-			args->stepmgr_jobs = list_create(NULL);
+			args->stepmgr_jobs = list_create(
+				(ListDelF) slurm_free_stepmgr_job_info);
 		sji->step_id = STEP_ID_FROM_JOB_RECORD(job_ptr);
 		sji->step_id.step_id = args->step_id->step_id;
-		sji->stepmgr = job_ptr->batch_host;
+		sji->stepmgr = xstrdup(job_ptr->batch_host);
 		list_append(args->stepmgr_jobs, sji);
 	}
 
@@ -2853,7 +2898,6 @@ static int _find_avail_future_node(slurm_msg_t *msg)
 		       reg_msg->node_name, reg_msg->hostname);
 
 		for (i = 0; (node_ptr = next_node(&i)); i++) {
-			slurm_addr_t addr;
 			char *comm_name = NULL;
 
 			if (!IS_NODE_FUTURE(node_ptr))
@@ -2873,7 +2917,7 @@ static int _find_avail_future_node(slurm_msg_t *msg)
 			/* Get IP of slurmd */
 			if (msg->address.ss_family != AF_UNSPEC) {
 				comm_name = xmalloc(INET6_ADDRSTRLEN);
-				slurm_get_ip_str(&addr, comm_name,
+				slurm_get_ip_str(&msg->address, comm_name,
 						 INET6_ADDRSTRLEN);
 			}
 
@@ -3290,8 +3334,17 @@ static void _slurm_rpc_job_sbcast_cred(slurm_msg_t *msg)
 		job_ptr = find_het_job_record(job_info_msg->step_id.job_id,
 					      job_info_msg->het_job_offset);
 		if (job_ptr) {
+			uint32_t req_step_id = job_info_msg->step_id.step_id;
+			uint32_t req_step_het_comp =
+				job_info_msg->step_id.step_het_comp;
+
 			job_info_msg->step_id =
 				STEP_ID_FROM_JOB_RECORD(job_ptr);
+
+			/* recover obliterated fields needed for hetjob */
+			job_info_msg->step_id.step_id = req_step_id;
+			job_info_msg->step_id.step_het_comp = req_step_het_comp;
+
 			error_code = job_alloc_info(msg->auth_uid,
 						    &job_info_msg->step_id,
 						    &job_ptr);
@@ -4019,6 +4072,7 @@ static void _slurm_rpc_submit_batch_het_job(slurm_msg_t *msg)
 	slurm_step_id_t step_id = SLURM_STEP_ID_INITIALIZER;
 	uint32_t het_job_offset = 0;
 	job_record_t *job_ptr = NULL, *first_job_ptr = NULL;
+	job_record_t *val_reject_job_ptr = NULL;
 	job_desc_msg_t *job_desc_msg;
 	char *script = NULL;
 	/* Locks: Read config, read job, read node, read partition */
@@ -4223,7 +4277,7 @@ static void _slurm_rpc_submit_batch_het_job(slurm_msg_t *msg)
 			if (!_het_job_component_acct_policy_runnable(job_ptr)) {
 				error_code = ESLURM_ACCOUNTING_POLICY;
 				reject_job = true;
-				_het_job_val_fini(job_ptr);
+				val_reject_job_ptr = job_ptr;
 				break;
 			}
 
@@ -4280,6 +4334,14 @@ static void _slurm_rpc_submit_batch_het_job(slurm_msg_t *msg)
 	xfree(het_job_id_set);
 
 	_het_job_val_rem(submit_job_list);
+	if (val_reject_job_ptr) {
+		_het_job_val_fini(val_reject_job_ptr);
+		/*
+		 * Not a het job component, so it must not be in the leader's
+		 * het_job_list. Cancel it on its own.
+		 */
+		(void) _het_job_cancel(val_reject_job_ptr, NULL);
+	}
 
 	if (reject_job && submit_job_list) {
 		(void) list_for_each(submit_job_list, _het_job_cancel, NULL);
@@ -6073,6 +6135,11 @@ static void _slurm_rpc_kill_job(slurm_msg_t *msg)
 	slurmctld_lock_t lock = {READ_LOCK, WRITE_LOCK,
 				 WRITE_LOCK, NO_LOCK, READ_LOCK };
 	int cc;
+
+	if (!kill->sjob_id) {
+		slurm_send_rc_msg(msg, ESLURM_INVALID_JOB_ID);
+		return;
+	}
 
 	/*
 	 * If the cluster is part of a federation and it isn't the origin of the

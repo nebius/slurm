@@ -276,6 +276,7 @@ static slurm_opt_t *_opt_copy(void)
 	opt_dup->argv = xcalloc(sizeof(char *), opt.argc);
 	for (i = 0; i < opt.argc; i++)
 		opt_dup->argv[i] = xstrdup(opt.argv[i]);
+	sropt.bcast_exclude = NULL; /* Moved by memcpy */
 	sropt.bcast_file = NULL;	/* Moved by memcpy */
 	opt.burst_buffer = NULL;	/* Moved by memcpy */
 	opt_dup->c_constraint = xstrdup(opt.c_constraint);
@@ -1339,6 +1340,12 @@ static bool _opt_verify(void)
 
 	if (!sropt.mpi_type)
 		sropt.mpi_type = xstrdup(slurm_conf.mpi_default);
+
+	if (sropt.async && !mpi_is_none_plugin(sropt.mpi_type)) {
+		error("--async does not support MPI type '%s' (set by --mpi, SLURM_MPI_TYPE or MpiDefault). Use --mpi=none to run a non-MPI program.",
+		      sropt.mpi_type);
+		verified = false;
+	}
 
 	if (!opt.job_name)
 		opt.job_name = xstrdup(sropt.cmd_name);

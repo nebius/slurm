@@ -528,10 +528,21 @@ extern int load_all_node_state ( bool state_only )
 						NODE_STATE_FAIL;
 				if ((node_state & NODE_STATE_POWERED_DOWN) ||
 				    (node_state & NODE_STATE_POWERING_DOWN)) {
-					node_ptr->node_state |=
+					uint32_t power_flag =
 						node_state &
 						(NODE_STATE_POWERED_DOWN |
 						 NODE_STATE_POWERING_DOWN);
+					if (IS_NODE_UNKNOWN(node_ptr)) {
+						orig_flags =
+							node_ptr->node_state &
+							NODE_STATE_FLAGS;
+						node_ptr->node_state =
+							NODE_STATE_IDLE |
+							orig_flags | power_flag;
+					} else {
+						node_ptr->node_state |=
+							power_flag;
+					}
 					/* Recover hardware state for powered
 					 * down nodes */
 					node_ptr->cpus = node_state_rec->cpus;
@@ -560,9 +571,18 @@ extern int load_all_node_state ( bool state_only )
 				if (node_state & NODE_STATE_REBOOT_ISSUED)
 					node_ptr->node_state |=
 						NODE_STATE_REBOOT_ISSUED;
+				/*
+				 * A powering up node has not responded since
+				 * its boot was requested. Restore NO_RESPOND
+				 * with POWERING_UP, because ping_nodes() skips
+				 * the node and ResumeTimeout only downs it
+				 * while NO_RESPOND is set. Without the flag a
+				 * node that never boots stays POWERING_UP.
+				 */
 				if (node_state & NODE_STATE_POWERING_UP) {
 					node_ptr->node_state |=
-						NODE_STATE_POWERING_UP;
+						(NODE_STATE_POWERING_UP |
+						 NODE_STATE_NO_RESPOND);
 				}
 			}
 
@@ -700,6 +720,18 @@ extern int load_all_node_state ( bool state_only )
 
 		if (node_ptr) {
 			node_cnt++;
+
+			/*
+			 * Scrub a NO_RESPOND flag recovered on a powered down
+			 * node. Such a node is never pinged, so the flag would
+			 * stick forever and keep the node out of
+			 * avail_node_bitmap. This also recovers nodes that were
+			 * stuck by a prior version of _require_node_reg().
+			 */
+			if (IS_NODE_POWERED_DOWN(node_ptr) ||
+			    IS_NODE_POWERING_DOWN(node_ptr))
+				node_ptr->node_state &=
+					(~NODE_STATE_NO_RESPOND);
 
 			node_ptr->next_state = node_state_rec->next_state;
 
@@ -1600,6 +1632,20 @@ static void _undo_reboot_asap(node_record_t *node_ptr)
 static void _require_node_reg(node_record_t *node_ptr)
 {
 	if (IS_NODE_EXTERNAL(node_ptr))
+		return;
+	/*
+	 * A powered down or powering up node is skipped by ping_nodes(), so
+	 * there is nothing to require of it and nothing to ping. On a powered
+	 * down node a NO_RESPOND flag set here would never be cleared. A
+	 * powering up node already has NO_RESPOND, which its registration or
+	 * ResumeTimeout clears. For either, refreshing last_response would
+	 * record a response that was never received, and on a powering up node
+	 * would make the registration's boot test fail and drop the
+	 * slurmd-supplied instance fields. ping_nodes_now would schedule a ping
+	 * cycle that skips this very node.
+	 */
+	if (IS_NODE_POWERED_DOWN(node_ptr) || IS_NODE_POWERING_DOWN(node_ptr) ||
+	    IS_NODE_POWERING_UP(node_ptr))
 		return;
 	node_ptr->node_state |= NODE_STATE_NO_RESPOND;
 	node_ptr->last_response = time(NULL);
@@ -3321,6 +3367,8 @@ extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up)
 	time_t now = time(NULL);
 	bool orig_node_avail;
 	bool was_invalid_reg, was_powering_up = false, was_powered_down = false;
+	bool slurmd_restarted;
+	time_t orig_last_response = 0;
 	static int node_features_cnt = -1;
 	int sockets1, sockets2;	/* total sockets on node */
 	int cores1, cores2;	/* total cores on node */
@@ -3606,6 +3654,11 @@ extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up)
 		last_node_update = now;
 	}
 
+	orig_last_response = node_ptr->last_response;
+	slurmd_restarted =
+		(node_ptr->slurmd_start_time != reg_msg->slurmd_start_time);
+	node_ptr->slurmd_start_time = reg_msg->slurmd_start_time;
+
 	if (IS_NODE_NO_RESPOND(node_ptr) ||
 	    IS_NODE_POWERING_UP(node_ptr) ||
 	    IS_NODE_POWERING_DOWN(node_ptr) ||
@@ -3658,21 +3711,31 @@ extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up)
 	}
 
 	/*
-	 * Apply slurmd-supplied fields (extra, instance_id, instance_type,
-	 * topology) after a power up or when slurmd's reported boot_time is
-	 * later than the last time we successfully heard from the node.
-	 * The timestamp check fires on first registration (last_response == 0)
-	 * and on an actual reboot, matching the reboot-detection branch below.
-	 * Steady-state pings and slurmd restarts without an actual reboot have
-	 * boot_time < last_response and are skipped, so admin overrides
-	 * via scontrol update node ... are not clobbered. last_response is
-	 * state-saved, so the gate also survives slurmctld restart.
-	 * Power transitions must be checked explicitly: the POWERING_UP
-	 * handling above already set last_response to now. Registration from
-	 * POWERED_DOWN may also report the uptime of an existing host.
+	 * NB-0005: always apply the slurmd-supplied fields when the node
+	 * registers from POWERING_UP or POWERED_DOWN. A cloud node can
+	 * register on an already running host, or from a container that
+	 * reports the host boot time, so the timestamp gate below would
+	 * skip it.
 	 */
-	if (was_powering_up || was_powered_down ||
-	    (node_ptr->boot_time > node_ptr->last_response)) {
+	if (was_powering_up || was_powered_down) {
+			orig_last_response = 0;
+			slurmd_restarted = true;
+	}
+
+	/*
+	 * Apply the slurmd-supplied extra, instance_id, instance_type and
+	 * topology only when the node booted since it last responded and
+	 * slurmd restarted since its last registration. That is true on the
+	 * first registration and after a real reboot or power up. A slurmd
+	 * restart does not boot the node, and a rebootless feature change does
+	 * not restart slurmd, so values set with scontrol update stay.
+	 * last_response is state-saved, so this also holds across a slurmctld
+	 * restart. Compare against last_response from before this
+	 * registration, because it is set to now above for a node leaving
+	 * power save. Compare slurmd start times only with each other, because
+	 * they come from the node's clock.
+	 */
+	if ((node_ptr->boot_time > orig_last_response) && slurmd_restarted) {
 		bool update_db = false;
 
 		if (reg_msg->extra) {
@@ -4423,9 +4486,18 @@ extern void make_node_alloc(node_record_t *node_ptr, job_record_t *job_ptr)
 
 	node_flags = node_ptr->node_state & NODE_STATE_FLAGS;
 	node_ptr->node_state = NODE_STATE_ALLOCATED | node_flags;
-	xfree(node_ptr->reason);
-	node_ptr->reason_time = 0;
-	node_ptr->reason_uid = NO_VAL;
+	/*
+	 * Only drop the reason when the node has no pending drain/fail/reboot:
+	 * those flags still own the reason, and a new allocation on a
+	 * shared node does not mean the node "returned to service."
+	 */
+	if (!(node_flags &
+	      (NODE_STATE_DRAIN | NODE_STATE_FAIL |
+	       NODE_STATE_REBOOT_REQUESTED | NODE_STATE_REBOOT_ISSUED))) {
+		xfree(node_ptr->reason);
+		node_ptr->reason_time = 0;
+		node_ptr->reason_uid = NO_VAL;
+	}
 
 	if (job_ptr && job_ptr->part_ptr &&
 	    (job_ptr->part_ptr->flags & PART_FLAG_PDOI)) {
@@ -4461,7 +4533,8 @@ extern void node_mgr_make_node_blocked(job_record_t *job_ptr, bool set)
 	if (!IS_JOB_WHOLE_TOPO(job_ptr))
 		return;
 
-	if (!job_ptr->job_resrcs || !job_ptr->job_resrcs->node_bitmap)
+	if (!job_ptr->job_resrcs || !job_ptr->job_resrcs->node_bitmap ||
+	    !job_ptr->part_ptr)
 		return;
 
 	tmp_bitmap = bit_copy(job_ptr->job_resrcs->node_bitmap);
@@ -4960,6 +5033,11 @@ static void _update_parts()
 	set_partition_tres(false);
 }
 
+/*
+ * Never delete a node here on error; create_nodes() rolls back the whole batch.
+ * Deleting the only node created so far would free config_ptr and its
+ * node_bitmap before that rollback reads them.
+ */
 static int _build_node_callback(char *alias, char *hostname, char *address,
 				char *bcast_address, uint16_t port,
 				int state_val, slurm_conf_node_t *conf_node,
@@ -4969,7 +5047,7 @@ static int _build_node_callback(char *alias, char *hostname, char *address,
 	node_record_t *node_ptr = NULL;
 
 	if ((rc = add_node_record(alias, config_ptr, &node_ptr)))
-		goto fini;
+		return rc;
 
 	if ((state_val != NO_VAL) &&
 	    (state_val != NODE_STATE_UNKNOWN))
@@ -4991,10 +5069,8 @@ static int _build_node_callback(char *alias, char *hostname, char *address,
 		node_ptr->features_act = xstrdup(config_ptr->feature);
 	}
 
-	if (node_ptr->topology_str && topology_g_add_rm_node(node_ptr)) {
-		rc = ESLURM_REQUESTED_TOPO_CONFIG_UNAVAILABLE;
-		goto fini;
-	}
+	if (node_ptr->topology_str && topology_g_add_rm_node(node_ptr))
+		return ESLURM_REQUESTED_TOPO_CONFIG_UNAVAILABLE;
 
 	bit_clear(power_up_node_bitmap, node_ptr->index);
 	if (IS_NODE_FUTURE(node_ptr)) {
@@ -5023,7 +5099,7 @@ static int _build_node_callback(char *alias, char *hostname, char *address,
 							 node_ptr->name,
 							 node_ptr->gres_list,
 							 NULL, NULL))) {
-			goto fini;
+			return rc;
 		}
 
 		rc = gres_node_config_validate(node_ptr,
@@ -5035,10 +5111,6 @@ static int _build_node_callback(char *alias, char *hostname, char *address,
 						CONF_FLAG_OR),
 					       NULL);
 	}
-
-fini:
-	if (rc && node_ptr)
-		_delete_node_ptr(node_ptr);
 
 	return rc;
 }
@@ -5131,8 +5203,38 @@ extern int create_nodes(update_node_msg_t *msg, char **err_msg)
 
 	if ((rc = expand_nodeline_info(conf_node, config_ptr, err_msg,
 				       _build_node_callback))) {
+		bitstr_t *created_bitmap = NULL;
+		node_record_t *node_ptr = NULL;
+		bool orphaned = false;
+
 		error("Failed to create a node in '%s': %s",
 		      conf_node->nodenames, *err_msg);
+
+		/*
+		 * add_node_record() only sets a bit for a node it created, so
+		 * this rolls back the batch without touching pre-existing
+		 * nodes. Iterate a copy: deleting the last node referencing
+		 * config_ptr frees it and node_bitmap with it.
+		 */
+		created_bitmap = bit_copy(config_ptr->node_bitmap);
+
+		for (int i = 0;
+		     (node_ptr = next_node_bitmap(created_bitmap, &i)); i++) {
+			if (_delete_node_ptr(node_ptr) != SLURM_SUCCESS)
+				orphaned = true;
+		}
+
+		if (orphaned)
+			error("Failed to roll back every node created from '%s'",
+			      conf_node->nodenames);
+
+		/* Nothing created means nothing ever referenced config_ptr. */
+		if (!bit_set_count(created_bitmap))
+			list_delete_ptr(config_list, config_ptr);
+		config_ptr = NULL;
+
+		FREE_NULL_BITMAP(created_bitmap);
+
 		goto fini;
 	}
 

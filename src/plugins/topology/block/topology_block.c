@@ -168,19 +168,9 @@ extern int topology_p_add_rm_node(node_record_t *node_ptr, char *unit,
 			change[i] = -1;
 		}
 
-		/*
-		 * The bit was cleared unconditionally above, so restore it
-		 * whenever the node belongs in this block, not only when the
-		 * membership changed. A redundant update (assigning a node to
-		 * the block it is already in) would otherwise drop the node
-		 * from the aggregate bitmap, and topology_p_eval_nodes() would
-		 * stop selecting eval_nodes_block() for it.
-		 */
 		if (add)
 			bit_set(ctx->blocks_nodes_bitmap, node_ptr->index);
 	}
-
-	/* Kept in sync here; block_record_validate() only sets it once. */
 	ctx->blocks_nodes_cnt = bit_set_count(ctx->blocks_nodes_bitmap);
 
 	for (int i = 0; i < ctx->block_count; i++) {

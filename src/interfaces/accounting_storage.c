@@ -47,6 +47,7 @@
 #include "src/common/list.h"
 #include "src/common/plugin.h"
 #include "src/common/plugrack.h"
+#include "src/common/run_in_daemon.h"
 #include "src/interfaces/select.h"
 #include "src/interfaces/accounting_storage.h"
 #include "src/common/slurm_protocol_api.h"
@@ -1122,6 +1123,9 @@ extern int clusteracct_storage_g_fini_ctld(void *db_conn,
 extern int jobacct_storage_g_job_start(void *db_conn,
 				       job_record_t *job_ptr)
 {
+	int rc;
+	bool elig_infinite;
+
 	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
@@ -1130,24 +1134,49 @@ extern int jobacct_storage_g_job_start(void *db_conn,
 	if (slurm_conf.accounting_storage_enforce & ACCOUNTING_ENFORCE_NO_JOBS)
 		return SLURM_SUCCESS;
 
+	/*
+	 * Pending + Completing is equivalent to Requeue. Consequently,
+	 * db_index and submit_time still refer to the run that just
+	 * ended, so a start record sent now would overwrite the
+	 * finished record.
+	 *
+	 * slurmdbd gets here on a DBD_JOB_START and must honor whatever
+	 * state an (older, unpatched) slurmctld peer explicitly sent,
+	 * so only skip when running in slurmctld.
+	 */
+	if (running_in_slurmctld() && IS_JOB_PENDING(job_ptr) &&
+	    IS_JOB_COMPLETING(job_ptr))
+		return SLURM_SUCCESS;
+
+	/*
+	 * The accounting plugins store an INFINITE eligible time while the
+	 * reason is WAIT_ARRAY_TASK_LIMIT. Remember whether this job start
+	 * carried one so job_independent() can skip resending the same value.
+	 * Only trust it if the plugin accepted the message, otherwise the
+	 * record may still hold an older eligible time that needs correcting.
+	 */
+	elig_infinite = (job_ptr->state_reason == WAIT_ARRAY_TASK_LIMIT);
+
 	/* A pending job's start_time is it's expected initiation time
 	 * (changed in slurm v2.1). Rather than changing a bunch of code
 	 * in the accounting_storage plugins and SlurmDBD, just clear
 	 * start_time before accounting and restore it later.
-	 * If an update for a job that is being requeued[hold] happens,
-	 * we don't want to modify the start_time of the old record.
-	 * Pending + Completing is equivalent to Requeue.
+	 * Don't do this for a requeued job (Pending + Completing). In
+	 * that case, the start time belongs to the previous run.
+	 * Reachable in slurmdbd, where the guard above does not apply.
 	 */
 	if (IS_JOB_PENDING(job_ptr) && !IS_JOB_COMPLETING(job_ptr)) {
-		int rc;
 		time_t orig_start_time = job_ptr->start_time;
 		job_ptr->start_time = (time_t) 0;
 		rc = (*(ops.job_start))(db_conn, job_ptr);
 		job_ptr->start_time = orig_start_time;
-		return rc;
+	} else {
+		rc = (*(ops.job_start))(db_conn, job_ptr);
 	}
 
-	return (*(ops.job_start))(db_conn, job_ptr);
+	job_ptr->db_elig_infinite = ((rc == SLURM_SUCCESS) && elig_infinite);
+
+	return rc;
 }
 
 /*

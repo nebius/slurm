@@ -81,6 +81,7 @@
 #include "src/interfaces/select.h"
 #include "src/interfaces/topology.h"
 
+#include "src/slurmctld/acct_policy.h"
 #include "src/slurmctld/groups.h"
 #include "src/slurmctld/job_scheduler.h"
 #include "src/slurmctld/licenses.h"
@@ -159,6 +160,11 @@ typedef struct {
 	bool found_denied;
 	bool found_allowed;
 } foreach_check_assoc_access_t;
+
+typedef struct {
+	slurmctld_resv_t *resv_backup;
+	slurmctld_resv_t *resv_ptr;
+} validate_reservation_access_update_t;
 
 static int _advance_resv_time(slurmctld_resv_t *resv_ptr);
 static void _advance_time(time_t *res_time, int day_cnt, int hour_cnt);
@@ -4162,7 +4168,9 @@ static int _validate_reservation_access_update(void *x, void *y)
 {
 	bool job_use_reservation = false;
 	job_record_t *job_ptr = (job_record_t *) x;
-	slurmctld_resv_t *resv_ptr = (slurmctld_resv_t *) y;
+	validate_reservation_access_update_t *args = y;
+	slurmctld_resv_t *resv_backup = args->resv_backup;
+	slurmctld_resv_t *resv_ptr = args->resv_ptr;
 
 	if (job_ptr->resv_name == NULL)
 		return 0;
@@ -4182,7 +4190,16 @@ static int _validate_reservation_access_update(void *x, void *y)
 	if (!job_use_reservation)
 		return 0;
 
-	if (_valid_job_access_resv(job_ptr, resv_ptr, false) != SLURM_SUCCESS) {
+	/*
+	 * Reject the update only if it removes the job's access: the job
+	 * has access before the update (resv_backup) but not after it
+	 * (resv_ptr). A job that already lost access must not block every
+	 * later update of the reservation.
+	 */
+	if ((_valid_job_access_resv(job_ptr, resv_ptr, false) !=
+	     SLURM_SUCCESS) &&
+	    (_valid_job_access_resv(job_ptr, resv_backup, false) ==
+	     SLURM_SUCCESS)) {
 		info("Rejecting update of reservation %s, because it's in use by %pJ",
 		     resv_ptr->name, job_ptr);
 		return 1;
@@ -4212,6 +4229,7 @@ extern int update_resv(resv_desc_msg_t *resv_desc_ptr, char **err_msg)
 {
 	time_t now = time(NULL);
 	slurmctld_resv_t *resv_backup, *resv_ptr;
+	validate_reservation_access_update_t resv_args = { 0 };
 	resv_desc_msg_t resv_desc;
 	int error_code = SLURM_SUCCESS, rc;
 	bool skip_it = false;
@@ -4782,9 +4800,11 @@ extern int update_resv(resv_desc_msg_t *resv_desc_ptr, char **err_msg)
 	 * the reservation, that lose access to the reservation by the update.
 	 * This has to happen after _set_access
 	 */
+	resv_args.resv_backup = resv_backup;
+	resv_args.resv_ptr = resv_ptr;
 	if ((job_ptr = list_find_first(job_list,
 				       _validate_reservation_access_update,
-				       resv_ptr))) {
+				       &resv_args))) {
 		if (err_msg)
 			xstrfmtcat(*err_msg,
 				   "Reservation update rejected because of JobId=%u",
@@ -7437,6 +7457,7 @@ extern void job_time_adj_resv(job_record_t *job_ptr)
 	slurmctld_resv_t * resv_ptr;
 	time_t now = time(NULL);
 	int32_t resv_begin_time;
+	uint32_t new_time_limit = job_ptr->time_limit;
 
 	iter = list_iterator_create(resv_list);
 	while ((resv_ptr = list_next(iter))) {
@@ -7455,10 +7476,17 @@ extern void job_time_adj_resv(job_record_t *job_ptr)
 				      job_ptr->node_bitmap) == 0)))
 			continue;	/* disjoint resources */
 		resv_begin_time = difftime(resv_ptr->start_time, now) / 60;
-		job_ptr->time_limit = MIN(job_ptr->time_limit,resv_begin_time);
+		new_time_limit = MIN(new_time_limit, resv_begin_time);
 	}
 	list_iterator_destroy(iter);
-	job_ptr->time_limit = MAX(job_ptr->time_limit, job_ptr->time_min);
+	new_time_limit = MAX(new_time_limit, job_ptr->time_min);
+	/*
+	 * acct_policy_alter_job() computes the usage to give back from
+	 * job_ptr->time_limit, so it must still hold the limit the usage was
+	 * booked against. Don't lower it above.
+	 */
+	acct_policy_alter_job(job_ptr, new_time_limit);
+	job_ptr->time_limit = new_time_limit;
 	job_end_time_reset(job_ptr);
 }
 
@@ -7754,10 +7782,9 @@ static void _addto_resv_exc(bitstr_t *core_bitmap, resv_exc_t *resv_exc_ptr)
 	}
 }
 
-extern int job_test_resv(job_record_t *job_ptr, time_t *when,
-			 bool move_time, bitstr_t **node_bitmap,
-			 resv_exc_t *resv_exc_ptr, bool *resv_overlap,
-			 bool reboot)
+extern int job_test_resv(job_record_t *job_ptr, time_t *when, bool move_time,
+			 bitstr_t **node_bitmap, resv_exc_t *resv_exc_ptr,
+			 bool *resv_maint, bool *resv_overlap, bool reboot)
 {
 	slurmctld_resv_t *resv_ptr = NULL, *res2_ptr;
 	time_t job_start_time, job_end_time, job_end_time_use, lic_resv_time;
@@ -7766,6 +7793,7 @@ extern int job_test_resv(job_record_t *job_ptr, time_t *when,
 	list_itr_t *iter;
 	int i, rc = SLURM_SUCCESS, rc2;
 
+	*resv_maint = false;
 	*resv_overlap = false;	/* initialize to false */
 	job_start_time = *when;
 	job_end_time   = *when + _get_job_duration(job_ptr, reboot);
@@ -7866,6 +7894,9 @@ extern int job_test_resv(job_record_t *job_ptr, time_t *when,
 		 */
 		iter = list_iterator_create(resv_list);
 		while ((res2_ptr = list_next(iter))) {
+			bitstr_t *steal_bitmap = NULL;
+			bool overlap_flex = false;
+
 			if (reboot)
 				job_end_time_use =
 					job_end_time + res2_ptr->boot_time;
@@ -7875,14 +7906,72 @@ extern int job_test_resv(job_record_t *job_ptr, time_t *when,
 			_get_rel_start_end(
 				res2_ptr, now, &start_relative, &end_relative);
 
-			if ((resv_ptr->flags & RESERVE_FLAG_MAINT) ||
-			    ((resv_ptr->flags & RESERVE_FLAG_OVERLAP) &&
-			     !(res2_ptr->flags & RESERVE_FLAG_MAINT)) ||
-			    (res2_ptr == resv_ptr) ||
-			    (res2_ptr->node_bitmap == NULL) ||
-			    (start_relative >= job_end_time_use) ||
-			    (end_relative <= job_start_time)) {
+			/*
+			 * Skip ourselves and reservations without nodes to
+			 * exclude.
+			 */
+			if ((res2_ptr == resv_ptr) || !res2_ptr->node_bitmap)
 				continue;
+
+			/*
+			 * Jobs in a MAINT reservation can use any other
+			 * reservation's nodes.
+			 */
+			if (resv_ptr->flags & RESERVE_FLAG_MAINT)
+				continue;
+
+			/*
+			 * Skip reservations not overlapping the job's time
+			 * frame.
+			 */
+			if ((start_relative >= job_end_time_use) ||
+			    (end_relative <= job_start_time))
+				continue;
+
+			/*
+			 * OVERLAP grants access to resources already in
+			 * another non-MAINT reservation.
+			 */
+			if ((resv_ptr->flags & RESERVE_FLAG_OVERLAP) &&
+			    !(res2_ptr->flags & RESERVE_FLAG_MAINT)) {
+				/*
+				 * Without FLEX the job cannot leave this
+				 * reservation's nodes: job_test_resv()
+				 * initialized *node_bitmap as a copy of
+				 * resv_ptr->node_bitmap, so any res2 nodes
+				 * present in it are shared ones that OVERLAP
+				 * grants. A reservation holding no nodes
+				 * (ANY_NODES) instead starts from the whole
+				 * cluster and keeps the full OVERLAP grant,
+				 * same as just below.
+				 */
+				if (!(resv_ptr->flags & RESERVE_FLAG_FLEX))
+					continue;
+
+				/*
+				 * A reservation without nodes (e.g.
+				 * ANY_NODES/license-only) keeps the full
+				 * OVERLAP grant: its jobs may use any nodes,
+				 * even those belonging to other reservations.
+				 * Such a reservation may carry either no
+				 * bitmap at all or an allocated but empty one,
+				 * so test for both.
+				 */
+				if (!resv_ptr->node_bitmap ||
+				    (bit_ffs(resv_ptr->node_bitmap) == -1))
+					continue;
+
+				/*
+				 * With FLEX, skip only when all of res2's
+				 * nodes are part of this reservation;
+				 * otherwise fall through and exclude the
+				 * resources not shared with it.
+				 */
+				if (bit_super_set(res2_ptr->node_bitmap,
+						  resv_ptr->node_bitmap))
+					continue;
+
+				overlap_flex = true;
 			}
 
 			if (!(res2_ptr->ctld_flags & RESV_CTLD_FULL_NODE)) {
@@ -7900,16 +7989,32 @@ extern int job_test_resv(job_record_t *job_ptr, time_t *when,
 				continue;
 			}
 
-			if (bit_overlap_any(*node_bitmap,
-					    res2_ptr->node_bitmap)) {
+			if (overlap_flex) {
+				/*
+				 * Resources reserved by other reservations
+				 * remain excluded, unless the reservation also
+				 * has the OVERLAP flag and the resources are
+				 * part of both reservations.
+				 */
+				steal_bitmap = bit_copy(res2_ptr->node_bitmap);
+				bit_and_not(steal_bitmap,
+					    resv_ptr->node_bitmap);
+			} else {
+				steal_bitmap = res2_ptr->node_bitmap;
+			}
+			if (bit_overlap_any(*node_bitmap, steal_bitmap)) {
 				log_flag(RESERVATION, "%s: reservation %s overlaps %s with %u nodes",
 					 __func__, resv_ptr->name,
 					 res2_ptr->name,
 					 bit_overlap(*node_bitmap,
-						     res2_ptr->node_bitmap));
+						     steal_bitmap));
 				*resv_overlap = true;
-				bit_and_not(*node_bitmap,res2_ptr->node_bitmap);
+				if (res2_ptr->flags & RESERVE_FLAG_MAINT)
+					*resv_maint = true;
+				bit_and_not(*node_bitmap, steal_bitmap);
 			}
+			if (steal_bitmap != res2_ptr->node_bitmap)
+				FREE_NULL_BITMAP(steal_bitmap);
 		}
 		list_iterator_destroy(iter);
 

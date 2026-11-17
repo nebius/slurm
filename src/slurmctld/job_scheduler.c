@@ -1809,12 +1809,11 @@ next_task:
 			fed_mgr_job_start(job_ptr, job_ptr->start_time);
 		} else {
 			/*
-			 * Node config unavailable plus state_reason
-			 * FAIL_BAD_CONSTRAINTS causes the job to be held
-			 * later. If job specs were unsatisfied due to
-			 * --prefer, give the opportunity to test the record
-			 * without it in a second attempt by resetting
-			 * state_reason to FAIL_CONSTRAINTS.
+			 * Node config unavailable causes the job to be held
+			 * later. If this record was tested with --prefer, the
+			 * job's next record tests it without --prefer instead.
+			 * Reset state_reason to FAIL_CONSTRAINTS so the job is
+			 * not held.
 			 */
 			if (ignore_prefer_val && job_ptr->details->prefer &&
 			    job_ptr->details->prefer_list &&
@@ -1822,7 +1821,7 @@ next_task:
 			     job_ptr->details->feature_list_use) &&
 			    (error_code ==
 			     ESLURM_REQUESTED_NODE_CONFIG_UNAVAILABLE) &&
-			    (job_ptr->state_reason == FAIL_BAD_CONSTRAINTS)) {
+			    use_prefer) {
 				sched_debug2("StateReason='%s' set after evaluating %pJ in partition %s (maybe unsatisfied due to --prefer while ignore_prefer_validation configured). Re-testing without --prefer if needed.",
 					     job_state_reason_string(job_ptr->state_reason), job_ptr, job_ptr->part_ptr->name);
 				job_ptr->state_reason = FAIL_CONSTRAINTS;
@@ -2080,10 +2079,8 @@ skip_start:
 
 fail_this_part:	if (fail_by_part) {
 			/* Search for duplicates */
-			if (job_ptr->part_ptr->flags & PART_FLAG_SCHED_FAILED) {
+			if (job_ptr->part_ptr->flags & PART_FLAG_SCHED_FAILED)
 				fail_by_part = false;
-				break;
-			}
 		}
 		if (fail_by_part) {
 			/*
@@ -4526,7 +4523,7 @@ static int _foreach_job_start_data_part(void *x, void *arg)
 	int rc2 = SLURM_SUCCESS;
 	time_t start_res, orig_start_time = (time_t) 0;
 	list_t *preemptee_candidates = NULL, *preemptee_job_list = NULL;
-	bool resv_overlap = false;
+	bool resv_overlap = false, resv_maint = false;
 	resv_exc_t resv_exc = { 0 };
 
 	job_start_data->rc = SLURM_SUCCESS;
@@ -4577,8 +4574,8 @@ static int _foreach_job_start_data_part(void *x, void *arg)
 	else
 		start_res = job_start_data->now;
 
-	rc2 = job_test_resv(job_ptr, &start_res, true, &resv_bitmap,
-			    &resv_exc, &resv_overlap, false);
+	rc2 = job_test_resv(job_ptr, &start_res, true, &resv_bitmap, &resv_exc,
+			    &resv_maint, &resv_overlap, false);
 	if (rc2 != SLURM_SUCCESS) {
 		FREE_NULL_BITMAP(avail_bitmap);
 		reservation_delete_resv_exc_parts(&resv_exc);

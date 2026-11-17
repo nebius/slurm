@@ -455,8 +455,8 @@ extern bool deallocate_nodes(job_record_t *job_ptr, bool timeout,
 	agent_args->msg_flags = msg_flags;
 
 	last_node_update = time(NULL);
-	kill_job = create_kill_job_msg(job_ptr, use_protocol_version);
-	kill_job->nodes = xstrdup(job_ptr->nodes);
+	kill_job = create_kill_job_msg(job_ptr, job_ptr->nodes,
+				       use_protocol_version);
 
 	agent_args->msg_args = kill_job;
 	set_agent_arg_r_uid(agent_args, SLURM_AUTH_UID_ANY);
@@ -1048,7 +1048,7 @@ static int _get_req_features(struct node_set *node_set_ptr, int node_set_size,
 	list_t *preemptee_candidates = NULL;
 	bool old_feat_change = false;
 	bool has_xand = false;
-	bool resv_overlap = false;
+	bool resv_overlap = false, resv_maint = false;
 	resv_exc_t resv_exc = { 0 };
 	/*
 	 * Mark nodes reserved for other jobs as off limit for this job.
@@ -1059,7 +1059,7 @@ static int _get_req_features(struct node_set *node_set_ptr, int node_set_size,
 	if (job_ptr->resv_name == NULL) {
 		time_t start_res = time(NULL);
 		resv_rc = job_test_resv(job_ptr, &start_res, false,
-					&resv_bitmap, &resv_exc,
+					&resv_bitmap, &resv_exc, &resv_maint,
 					&resv_overlap, true);
 		if ((resv_rc == ESLURM_NODES_BUSY) ||
 		    (resv_rc == ESLURM_RESERVATION_MAINT)) {
@@ -1104,7 +1104,8 @@ static int _get_req_features(struct node_set *node_set_ptr, int node_set_size,
 		 * We are just interested in resv_exc being filled in
 		 */
 		(void) job_test_resv(job_ptr, &start_res, false, &resv_bitmap,
-				     &resv_exc, &resv_overlap, true);
+				     &resv_exc, &resv_maint, &resv_overlap,
+				     true);
 		FREE_NULL_BITMAP(resv_bitmap);
 	}
 
@@ -2477,6 +2478,9 @@ static int _get_resv_mpi_ports(job_record_t *job_ptr,
  * IN submission - if set ignore reservations
  * IN scheduler_type - which scheduler is calling this
  *      (i.e. SLURMDB_JOB_FLAG_BACKFILL, SLURMDB_JOB_FLAG_SCHED, etc)
+ * OUT job_node_select->bf_preempt_select - for SLURMDB_JOB_FLAG_BACKFILL
+ *	only, the nodes selected when ESLURM_NODES_BUSY is returned because
+ *	preempted jobs are still ending, caller must free
  * RET 0 on success, ESLURM code from slurm_errno.h otherwise
  * globals: list_part - global list of partition info
  *	default_part_loc - pointer to default partition
@@ -2783,11 +2787,24 @@ extern int select_nodes(job_node_select_t *job_node_select,
 		}
 		_preempt_jobs(preemptee_job_list, kill_pending, &error_code,
 			      job_ptr);
-		if ((error_code == ESLURM_NODES_BUSY) && kill_pending) {
-			detail_ptr->preempt_start_time = now;
-			job_ptr->preempt_in_progress = true;
-			if (job_ptr->array_recs)
-				job_ptr->array_recs->pend_run_tasks++;
+		if (error_code == ESLURM_NODES_BUSY) {
+			if (kill_pending) {
+				detail_ptr->preempt_start_time = now;
+				job_ptr->preempt_in_progress = true;
+				if (job_ptr->array_recs)
+					job_ptr->array_recs->pend_run_tasks++;
+			}
+			/*
+			 * Pass back selection when job can't start now due to
+			 * completing preemptable jobs. This selection may be
+			 * different than backfill's _future_run_test due
+			 * to trying to preempt the least amount of jobs.
+			 */
+			if (scheduler_type == SLURMDB_JOB_FLAG_BACKFILL) {
+				SWAP(job_node_select->bf_preempt_select,
+				     select_bitmap);
+				FREE_NULL_BITMAP(select_bitmap);
+			}
 		}
 	}
 	if (error_code) {
@@ -3720,7 +3737,7 @@ static int _build_node_list(job_record_t *job_ptr,
 	bitstr_t *tmp_feature;
 	bitstr_t *grp_node_bitmap;
 	bool has_mor = false;
-	bool resv_overlap = false;
+	bool resv_overlap = false, resv_maint = false;
 	bitstr_t *node_maps[NM_TYPES] = { NULL, NULL, NULL, NULL, NULL, NULL };
 	bitstr_t *reboot_bitmap = NULL;
 
@@ -3732,8 +3749,8 @@ static int _build_node_list(job_record_t *job_ptr,
 		 */
 		time_t start_res = time(NULL);
 		rc = job_test_resv(job_ptr, &start_res, false,
-				   &usable_node_mask, NULL, &resv_overlap,
-				   true);
+				   &usable_node_mask, NULL, &resv_maint,
+				   &resv_overlap, true);
 		if (rc != SLURM_SUCCESS) {
 			job_ptr->state_reason = WAIT_RESERVATION;
 			xfree(job_ptr->state_desc);
@@ -3765,8 +3782,11 @@ static int _build_node_list(job_record_t *job_ptr,
 		if (resv_overlap && bit_ffs(usable_node_mask) < 0) {
 			job_ptr->state_reason = WAIT_NODE_NOT_AVAIL;
 			xfree(job_ptr->state_desc);
-			xstrfmtcat(job_ptr->state_desc,
-				   "ReqNodeNotAvail, Reserved for maintenance");
+			xstrfmtcat(
+				job_ptr->state_desc,
+				resv_maint ?
+					"ReqNodeNotAvail, Reserved for maintenance" :
+					"ReqNodeNotAvail, Reserved for other reservations");
 			FREE_NULL_BITMAP(usable_node_mask);
 			return ESLURM_RESERVATION_BUSY; /* All reserved */
 		}
@@ -4680,8 +4700,10 @@ extern void re_kill_job(job_record_t *job_ptr)
 	xfree(host_str);
 	last_job_id = job_ptr->job_id;
 	hostlist_destroy(kill_hostlist);
+	/* The Epilog needs the full allocation, not just the resend subset. */
 	agent_args->msg_args =
-		create_kill_job_msg(job_ptr, agent_args->protocol_version);
+		create_kill_job_msg(job_ptr, job_ptr->nodes,
+				    agent_args->protocol_version);
 	set_agent_arg_r_uid(agent_args, SLURM_AUTH_UID_ANY);
 	agent_queue_request(agent_args);
 }

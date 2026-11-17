@@ -145,7 +145,11 @@ This option can only be used in an existing job allocation that has the step
 manager enabled (see \fB\-\-stepmgr\fR in \fBsalloc\fR(1)/\fBsbatch\fR(1) and
 \fBSlurmctldParameters=enable_stepmgr\fR in \fBslurm.conf\fR(5)).
 
-This option is mutually exclusive with \fB\-\-pty\fR and \fB\-\-immediate\fR.
+This option is mutually exclusive with \fB\-\-pty\fR, \fB\-\-immediate\fR, and
+any MPI type other than \fBnone\fR, whether selected with \fB\-\-mpi\fR, the
+\fBSLURM_MPI_TYPE\fR environment variable, or \fBMpiDefault\fR in
+\fBslurm.conf\fR(5); use \fB\-\-mpi=none\fR to override a non-\fBnone\fR
+default.
 
 \fBNOTE\fR: This is a new feature that is still in beta, its usage may change
 in future releases.
@@ -454,9 +458,12 @@ Job container type for job.
 \fB\-\-contiguous\fR
 If set, then the allocated nodes must form a contiguous set.
 
-\fBNOTE\fR: This option will only work with the \fBtopology/flat\fR plugin.
-Other topology plugins modify the node ordering and prevent this option from
-taking effect. This option applies to job allocations.
+\fBNOTE\fR: Whether this option is honored depends on the topology plugin.
+It is enforced by \fBtopology/flat\fR and \fBtopology/tree\fR. Under
+\fBtopology/tree\fR it also disables the topology-aware node selection
+optimizations, so the resulting allocation may span nodes with greater
+network distance between them. It is silently ignored by all other
+topology plugins. This option applies to job allocations.
 .IP
 
 .TP
@@ -1837,9 +1844,6 @@ Default value is \fBDefMemPerNode\fR and the maximum value is
 seen using the \fBscontrol show config\fR command.
 This parameter would generally be used if whole nodes
 are allocated to jobs (\fBSelectType=select/linear\fR).
-Specifying a memory limit of zero for a job step will restrict the job step
-to the amount of memory allocated to the job, but not remove any of the job's
-memory allocation from being available to other job steps.
 Also see \fB\-\-mem\-per\-cpu\fR and \fB\-\-mem\-per\-gpu\fR.
 The \fB\-\-mem\fR, \fB\-\-mem\-per\-cpu\fR and \fB\-\-mem\-per\-gpu\fR
 options are mutually exclusive. If \fB\-\-mem\fR, \fB\-\-mem\-per\-cpu\fR or
@@ -1847,9 +1851,11 @@ options are mutually exclusive. If \fB\-\-mem\fR, \fB\-\-mem\-per\-cpu\fR or
 take precedence over the environment (potentially inherited from \fBsalloc\fR
 or \fBsbatch\fR).
 
-\fBNOTE\fR: A memory size specification of zero is treated as a special case and
-grants the job access to all of the memory on each node for newly submitted jobs
-and all available job memory to new job steps.
+\fBNOTE\fR: A memory size specification of zero (\fB\-\-mem=0\fR) is a special
+case that grants a new job access to all of the memory on each node and
+grants a new step all of the job's memory allocation on each node.
+When specified on a job step, a zero value will still allow that memory to be
+used by other steps, like the \fB\-\-overlap\fR option but for only memory.
 
 \fBNOTE\fR: The memory used by each slurmstepd process is included in the job's
 total memory usage. It typically consumes between 20MiB and 200MiB, though this
@@ -2000,12 +2006,15 @@ are allocated to jobs (\fBSelectType=select/cons_tres\fR).
 If resources are allocated by core, socket, or whole nodes, then the number
 of CPUs allocated to a job may be higher than the task count and the value
 of \fB\-\-mem\-per\-cpu\fR should be adjusted accordingly.
-Specifying a memory limit of zero for a job step will restrict the job step
-to the amount of memory allocated to the job, but not remove any of the job's
-memory allocation from being available to other job steps.
 Also see \fB\-\-mem\fR and \fB\-\-mem\-per\-gpu\fR.
 The \fB\-\-mem\fR, \fB\-\-mem\-per\-cpu\fR and \fB\-\-mem\-per\-gpu\fR
 options are mutually exclusive.
+
+\fBNOTE\fR: A memory size specification of zero (\fB\-\-mem\-per\-cpu=0\fR) is
+a special case that grants a new job access to all of the memory on each node
+and grants a new step all of the job's memory allocation on each node.
+When specified on a job step, a zero value will still allow that memory to be
+used by other steps, like the \fB\-\-overlap\fR option but for only memory.
 
 \fBNOTE\fR: If the final amount of memory requested by a job
 can't be satisfied by any of the nodes configured in the
@@ -2426,8 +2435,26 @@ will be set to the count of nodes actually
 allocated to the job. See the \fBENVIRONMENT VARIABLES\fR section
 for more information. If \fB\-N\fR is not specified, the default
 behavior is to allocate enough nodes to satisfy the requested resources as
-expressed by per\-job specification options, e.g. \fB\-n\fR, \fB\-c\fR and
-\fB--gpus\fR.
+expressed by per\-job specification options, e.g. \fB\-n\fR, \fB\-c\fR,
+\fB\-\-ntasks\-per\-node\fR and \fB\-\-gpus\fR.
+
+This derivation applies to job allocations only.
+When \fB\-N\fR is omitted, the derived count is \fB\-\-ntasks\fR, or
+\fB\-\-ntasks\fR divided by \fB\-\-ntasks\-per\-node\fR and rounded up if that
+option is given.
+Without \fB\-\-ntasks\-per\-node\fR the count is only an upper bound, so
+\fBMaxNodes\fR reduces it rather than rejecting the job.
+With \fB\-\-ntasks\-per\-node\fR the count is the number of nodes the job
+requires, and \fBMaxNodes\fR rejects it as it would an explicit count.
+Either way, a job whose tasks do not fit is rejected or left in a PENDING
+state.
+
+The derived count is not lower than the partition's \fBMinNodes\fR at submit
+time.
+Raising the partition's \fBMinNodes\fR later does not re-derive it, so a job
+whose count is below the new value stays PENDING until its node count is set
+explicitly.
+
 The job will be allocated as many nodes as possible within the range specified
 and without delaying the initiation of the job.
 If the number of tasks is given and a number of requested nodes is also given,
@@ -2445,6 +2472,8 @@ of "k" (multiplies numeric value by 1,024) or "m" (multiplies numeric value by
 \fB\-n\fR, \fB\-\-ntasks\fR=<\fInumber\fR>
 Specify the number of tasks to run. Request that \fBsrun\fR
 allocate resources for \fIntasks\fR tasks.
+For a job allocation, if the \fB\-\-nodes\fR option is not used, this option
+is used to implicitly determine the node count.
 The default is one task per node, but note
 that the \fB\-\-cpus\-per\-task\fR option will change this default. This option
 applies to job and step allocations.
@@ -2496,6 +2525,9 @@ If used with the \fB\-\-ntasks\fR option, the \fB\-\-ntasks\fR option will take
 precedence and the \fB\-\-ntasks\-per\-node\fR will be treated as a
 \fImaximum\fR count of tasks per node.
 Meant to be used with the \fB\-\-nodes\fR option.
+If the \fB\-\-nodes\fR option is not used and \fB\-\-ntasks\fR is given,
+this option determines the job's node count.
+See \fB\-N\fR, \fB\-\-nodes\fR.
 This is related to \fB\-\-cpus\-per\-task\fR=\fIncpus\fR,
 but does not require knowledge of the actual number of cpus on
 each node. In some cases, it is more convenient to be able to
@@ -2583,9 +2615,12 @@ Slurm build time.
 
 .TP
 \fB\-\-overlap\fR
-Specifying \-\-overlap allows steps to share all resources (CPUs, memory, and
-GRES) with all other steps. A step using this option will overlap all other
-steps, even those that did not specify \-\-overlap.
+Specifying \fB\-\-overlap\fR allows steps to share all resources (CPUs, memory,
+and GRES) with all other steps.  A step using this option will overlap all other
+steps, even those that did not specify \fB\-\-overlap\fR.
+This overlapping behavior is implied for only memory if \fB\-\-mem=0\fR or
+\fB\-\-mem\-per\-cpu=0\fR is set.
+Refer to those options' descriptions for further details.
 
 By default steps do not share resources with other parallel steps.
 This option applies to step allocations.
@@ -2852,9 +2887,9 @@ applies to step allocations.
 .TP
 \fB\-\-reservation\fR=<\fIreservation_names\fR>
 Allocate resources for the job from the named reservation. If the job can use
-more than one reservation, specify their names in a comma separate list and the
-one offering earliest initiation. Each reservation will be considered in the
-order it was requested.
+more than one reservation, specify their names in a comma-separated list and the
+job will start in the reservation offering the earliest initiation. The order
+in which the reservations are listed is not significant.
 All reservations will be listed in scontrol/squeue through the life of the job.
 In accounting the first reservation will be seen and after the job starts the
 reservation used will replace it.
@@ -3121,9 +3156,10 @@ Set a minimum time limit on the job allocation.
 If specified, the job may have its \fB\-\-time\fR limit lowered to a value
 no lower than \fB\-\-time\-min\fR if doing so permits the job to begin
 execution earlier than otherwise possible.
-The job's time limit will not be changed after the job is allocated resources.
 This is performed by a backfill scheduling algorithm to allocate resources
-otherwise reserved for higher priority jobs.
+otherwise reserved for higher priority jobs or an upcoming reservation.
+The lowered limit is set when the job is allocated resources and is not
+changed afterwards.
 Acceptable time formats include "minutes", "minutes:seconds",
 "hours:minutes:seconds", "days\-hours", "days\-hours:minutes" and
 "days\-hours:minutes:seconds". This option applies to job allocations.

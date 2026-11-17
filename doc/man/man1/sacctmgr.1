@@ -330,7 +330,8 @@ This sets the end time for each job to the latest of the job's start, eligible,
 and submit times, and sets the state to completed by default. Once corrected,
 this triggers the SlurmDBD to recalculate the usage from before the earliest
 submit time of all the runaway jobs. You must have an \fBAdminLevel\fR of at
-least \fBOperator\fR to perform this.
+least \fBOperator\fR to perform this. This request is rejected while a usage
+rollup or archive is running; retry once it finishes.
 
 \fBNOTE\fR: This operation could take a long time and sreport may not return
 data until the recalculation is complete. It is best to run this when the
@@ -2229,6 +2230,14 @@ scheduled as long as the limits are not reached, but could be killed due to
 limits.
 
 See \fIAccountingStorageEnforce\fR in slurm.conf man page.
+
+\fBNOTE\fR: A job's TRESRunMins usage is booked using the QOS UsageFactor in
+effect when the job starts, and is given back with that same factor when the
+job ends. Modifying a QOS's UsageFactor does not rescale the TRESRunMins usage
+of jobs that are already running; RawUsage and GrpWall continue to accrue with
+the current factor. However, when slurmctld is restarted or reconfigured, the
+usage of all running jobs is booked again with the UsageFactor in effect at
+that time.
 
 Default is 1. To clear an existing value, set a new value of \-1.
 .IP

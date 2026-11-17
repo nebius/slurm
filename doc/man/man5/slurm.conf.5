@@ -1836,6 +1836,10 @@ The "\-\-interactive" option is intentionally not documented in the srun man
 page. It is meant only to be used in \fBInteractiveStepOptions\fR in order to
 create an "interactive step" that will not consume resources so that other
 steps may run in parallel with the interactive step.
+
+\fBNOTE\fR: For heterogeneous jobs the interactive step runs only in the first
+component, and InteractiveStepOptions cannot be set per component. See
+\fBLaunchParameters=use_interactive_step\fR.
 .IP
 
 .TP
@@ -2525,6 +2529,11 @@ by launching the srun command with InteractiveStepOptions as options.
 
 This does not affect salloc called with a command as an argument. These jobs
 will continue to be executed as the calling user on the calling host.
+
+For heterogeneous jobs, the interactive step is created only in the first
+component, on its first node. The nodes of the other components are allocated
+but get no interactive step. They can be reached with
+\fBsrun \-\-het\-group=\fR\fIN\fR from inside the interactive shell.
 .IP
 
 .TP
@@ -3133,7 +3142,8 @@ If set, jobs may be preempted to reclaim licenses. Otherwise jobs requesting
 busy licenses will have to wait even if they have preemption priority.
 The logic to support this option is only available in the select/cons_tres
 plugin. Jobs that use OR in the license request are not eligible to preempt
-other jobs to reclaim licenses.
+other jobs to reclaim licenses, and preemption is never used to reclaim
+Hierarchical Resources (HRES).
 .IP
 
 .TP
@@ -3412,32 +3422,35 @@ The default value is "priority/multifactor".
 .RS
 .TP
 \fBpriority/basic\fR
-Jobs are evaluated in a First In, First Out (FIFO) manner.
+Jobs are assigned a priority in order of submission, with earlier jobs receiving
+higher priority, supporting a "First In, First Out" (FIFO) scheduling approach.
 .IP
 
 .TP
 \fBpriority/multifactor\fR
-Jobs are assigned a priority based upon a variety of factors
-that include size, age, Fairshare, etc.
+Jobs are assigned a priority based upon a variety of factors that include size,
+age, Fairshare, etc. By default no factors are enabled; use the
+\fBPriorityWeight*\fR fields to specify which factors should be used to
+calculate job priorities.
 .IP
 .RE
-.RS
-.nr step 1 1
-When not FIFO scheduling, jobs are prioritized in the following order:
-.br
+.IP
+Jobs are evaluated by the scheduler in the following order:
 
 1. Jobs that can preempt
 .br
 2. Jobs with an advanced reservation
 .br
-3. Partition PriorityTier
+3. Partition \fBPriorityTier\fR
 .br
-4. Job priority
+4. Job priority (determined by \fBPriorityType\fR)
 .br
 5. Job submit time
 .br
 6. Job ID
-.RE
+
+Refer to the Multifactor Priority Plugin page for more details:
+<https://slurm.schedmd.com/priority_multifactor.html>
 .IP
 
 .TP
@@ -3830,6 +3843,9 @@ this option on multiple lines.\fR
 .TP
 \fBPropagatePrioProcess\fR
 Controls the scheduling priority (nice value) of user spawned tasks.
+
+\fBNOTE\fR: This has limited functionality if used in combination with cgroups
+(\fBproctrack/cgroup\fR or \fBtask/cgroup\fR).
 .IP
 .RS
 .TP 5
@@ -6179,6 +6195,9 @@ For example "nid[10\-20]:4" will prevent 4 powered up nodes in the set
 Multiple sets of nodes can be specified with or without counts in a comma
 separated list (e.g "nid[10\-20]:4,nid[80\-90]:2").
 By default no nodes are excluded.
+Nodes explicitly requested to power down, including nodes allocated from a
+partition configured with \fBPowerDownOnIdle=YES\fR, are not affected by this
+option.
 This value may be updated with scontrol.
 See \fBReconfigFlags=KeepPowerSaveSettings\fR for setting persistence.
 .IP
@@ -6189,6 +6208,9 @@ Specifies the partitions whose nodes are to not be placed in power save
 mode, even if the node remains idle for an extended period of time.
 Multiple partitions can be identified and separated by commas.
 By default no nodes are excluded.
+Nodes explicitly requested to power down, including nodes allocated from a
+partition configured with \fBPowerDownOnIdle=YES\fR, are not affected by this
+option.
 This value may be updated with scontrol.
 See \fBReconfigFlags=KeepPowerSaveSettings\fR for setting persistence.
 .IP
@@ -6200,6 +6222,9 @@ Valid states include CLOUD, DOWN, DRAIN, DYNAMIC_FUTURE, DYNAMIC_NORM, FAIL,
 INVALID_REG, MAINTENANCE, NOT_RESPONDING, PLANNED, and RESERVED.
 By default, any of these states, if idle for \fBSuspendTime\fR, would be
 powered down.
+Nodes explicitly requested to power down, including nodes allocated from a
+partition configured with \fBPowerDownOnIdle=YES\fR, are not affected by this
+option.
 This value may be updated with scontrol.
 See \fBReconfigFlags=KeepPowerSaveSettings\fR for setting persistence.
 .IP
@@ -7294,6 +7319,8 @@ node. If \fBCPUs\fR is omitted, its default will be set equal to the product of
 .TP
 \fBCpuSpecList\fR
 A comma\-delimited list of Slurm abstract CPU IDs reserved for system use.
+These are indices in Slurm's per-node CPU numbering, which may not match
+the CPU IDs used by the operating system.
 The list will be expanded to include all other CPUs, if any, on the same cores.
 Depending upon the \fBTaskPluginParam\fR option of \fBSlurmdOffSpec\fR,
 the Slurm daemon slurmd may either be confined to these
@@ -7358,6 +7385,13 @@ set an empty string (Gres="") to configure no Gres on a subsequent entry.
 By default a node has no generic resources and its maximum count is
 that of an unsigned 64bit integer.
 Also see \fBFeatures\fR for Boolean flags to filter nodes using job constraints.
+
+\fBNOTE\fR: Before changing a GRES's configured count, drain the node of all
+running jobs using that GRES if it has the \fBFile\fR or \fBMultipleFiles\fR
+parameters set either manually or with \fBAutoDetect\fR in \fBgres.conf\fR(5).
+Similarly, drain the node before reducing the configured count of a shared GRES
+(gres/mps, gres/shard). Failure to do so will result in any running job using
+those GRES being aborted and, if eligible, requeued.
 .IP
 
 .TP
@@ -7903,7 +7937,10 @@ This parameter only takes effect when \fBPreemptType=partition_prio\fR.
 The default value is zero, no preemption grace time is allowed on
 this partition.
 Once a job has been selected for preemption, its end time is set to the current
-time plus GraceTime. The job's tasks are immediately sent SIGCONT and SIGTERM
+time plus GraceTime, or left unchanged if it was already sooner than that. A
+job whose time limit expires before GraceTime elapses therefore receives only
+the remainder of its time limit, not the full GraceTime.
+The job's tasks are immediately sent SIGCONT and SIGTERM
 signals in order to provide notification of its imminent termination.
 This is followed by the SIGCONT, SIGTERM and SIGKILL signal sequence upon
 reaching its new end time. This second set of signals is sent to both the
@@ -8143,8 +8180,7 @@ allocated at least one job.
 These nodes will not power down until they transition from COMPLETING to IDLE.
 If set to "NO" then power saving will operate as configured for the partition.
 The default value is "NO".
-See <https://slurm.schedmd.com/power_save.html> and
-<https://slurm.schedmd.com/elastic_computing.html> for more details.
+See <https://slurm.schedmd.com/power_save.html> for more details.
 
 \fBNOTE\fR:
 The following will cause a transition from COMPLETING to IDLE:
@@ -8158,8 +8194,13 @@ user's job is allocated.
 job is allocated.
 
 \fBNOTE\fR:
+Nodes allocated from this partition will still be sent a power down request even
+if they are excluded from automatic power save mode by \fBSuspendExcNodes\fR,
+\fBSuspendExcParts\fR, or \fBSuspendExcStates\fR.
+
+\fBNOTE\fR:
 Nodes are still subject to powering down when being IDLE for \fBSuspendTime\fR
-when PowerDownOnIdle is set to NO.</p>
+when \fBPowerDownOnIdle\fR is set to "NO".
 
 Also see \fBSuspendTime\fR.
 .IP

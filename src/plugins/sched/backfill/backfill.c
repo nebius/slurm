@@ -283,7 +283,8 @@ static void _reset_job_time_limit(job_record_t *job_ptr, time_t now,
 				  node_space_map_t *node_space);
 static void _set_bf_exit(bf_exit_t code);
 static int  _set_hetjob_details(void *x, void *arg);
-static int  _start_job(job_record_t *job_ptr, bitstr_t *avail_bitmap);
+static int _start_job(job_record_t *job_ptr, bitstr_t *avail_bitmap,
+		      bitstr_t **preempt_select_ptr);
 static bool _test_resv_overlap(node_space_map_t *node_space,
 			       bitstr_t *use_bitmap, job_record_t *job_ptr,
 			       uint32_t start_time, uint32_t end_reserve);
@@ -1190,7 +1191,19 @@ extern void *backfill_agent(void *args)
 			continue;
 		}
 
+		/*
+		 * Check shutdown while holding check_bf_running_lock so this
+		 * is atomic with setting bf_active. Otherwise slurmctld could
+		 * see bf_active == 0 during shutdown, continue on to flush
+		 * RPCs and check for held locks, by which time we could be
+		 * holding the locks.
+		 */
 		slurm_mutex_lock(&check_bf_running_lock);
+		if (slurmctld_config.shutdown_time) {
+			slurm_mutex_unlock(&check_bf_running_lock);
+			short_sleep = false;
+			continue;
+		}
 		slurmctld_diag_stats.bf_active = 1;
 		slurm_mutex_unlock(&check_bf_running_lock);
 
@@ -2249,7 +2262,7 @@ static void _attempt_backfill(void)
 	uint32_t test_array_job_id = 0;
 	uint32_t test_array_count = 0;
 	uint32_t job_no_reserve;
-	bool is_job_array_head, resv_overlap = false;
+	bool is_job_array_head, resv_overlap = false, resv_maint = false;
 	uint8_t save_share_res = 0, save_whole_node = 0;
 	int test_fini;
 	uint32_t qos_flags = 0;
@@ -2994,7 +3007,7 @@ TRY_LATER:
 			job_ptr->time_limit = orig_time_limit;
 		/* Determine impact of any advance reservations */
 		j = job_test_resv(job_ptr, &start_res, true, &avail_bitmap,
-				  &resv_exc, &resv_overlap, false);
+				  &resv_exc, &resv_maint, &resv_overlap, false);
 		if (j != SLURM_SUCCESS) {
 			log_flag(BACKFILL, "%pJ reservation defer",
 				 job_ptr);
@@ -3227,7 +3240,7 @@ later_start_set:
 			resv_end = 0;
 			j = job_test_resv(job_ptr, &start_res, false,
 					  &tmp_node_bitmap, &tmp_resv_exc,
-					  &resv_overlap, true);
+					  &resv_maint, &resv_overlap, true);
 			if ((qos_flags & QOS_FLAG_NO_RESERVE) &&
 					    slurm_conf.preempt_mode)
 				job_ptr->time_limit = time_limit;
@@ -3402,6 +3415,7 @@ later_start_set:
 			uint32_t hard_limit;
 			bool reset_time = false;
 			int rc;
+			bitstr_t *preempt_select = NULL;
 
 			/* get fed job lock from origin cluster */
 			if (fed_mgr_job_lock(job_ptr)) {
@@ -3411,7 +3425,12 @@ later_start_set:
 				goto skip_start;
 			}
 
-			rc = _start_job(job_ptr, resv_bitmap);
+			rc = _start_job(job_ptr, resv_bitmap, &preempt_select);
+
+			/* If the job is only waiting on preempted jobs */
+			if ((rc == ESLURM_NODES_BUSY) && preempt_select)
+				SWAP(avail_bitmap, preempt_select);
+			FREE_NULL_BITMAP(preempt_select);
 
 			if (rc == SLURM_SUCCESS) {
 				/*
@@ -3891,8 +3910,15 @@ skip_start:
 	return;
 }
 
-/* Try to start the job on any non-reserved nodes */
-static int _start_job(job_record_t *job_ptr, bitstr_t *resv_bitmap)
+/*
+ * Try to start the job on any non-reserved nodes
+ * IN job_ptr - job to start
+ * IN resv_bitmap - bitmap of nodes to exclude
+ * OUT preempt_select_ptr - nodes selected if the job is waiting on preemption
+ *                          to complete (may be NULL, caller must free)
+ */
+static int _start_job(job_record_t *job_ptr, bitstr_t *resv_bitmap,
+		      bitstr_t **preempt_select_ptr)
 {
 	int rc;
 	bitstr_t *orig_exc_nodes = NULL;
@@ -3931,7 +3957,7 @@ static int _start_job(job_record_t *job_ptr, bitstr_t *resv_bitmap)
 	if (rc == SLURM_SUCCESS) {
 		/* job initiated */
 		last_job_update = time(NULL);
-		log_flag(HETJOB, "Started %pJ in %s on %s",
+		info("Started %pJ in %s on %s",
 		     job_ptr, job_ptr->part_ptr->name, job_ptr->nodes);
 		if (job_ptr->batch_flag == 0) {
 			srun_allocate(job_ptr);
@@ -3961,6 +3987,10 @@ static int _start_job(job_record_t *job_ptr, bitstr_t *resv_bitmap)
 		debug3("Failed to start %pJ: %s",
 		       job_ptr, slurm_strerror(rc));
 	}
+
+	if (preempt_select_ptr)
+		SWAP(job_node_select.bf_preempt_select, *preempt_select_ptr);
+	FREE_NULL_BITMAP(job_node_select.bf_preempt_select);
 
 	return rc;
 }
@@ -4013,7 +4043,7 @@ static void _reset_job_time_limit(job_record_t *job_ptr, time_t now,
 {
 	int32_t j, resv_delay;
 	uint32_t orig_time_limit = job_ptr->time_limit;
-	uint32_t new_time_limit;
+	uint32_t new_time_limit = job_ptr->time_limit;
 
 	for (j = 0; ; ) {
 		if ((node_space[j].begin_time != now) && // No current conflicts
@@ -4023,13 +4053,18 @@ static void _reset_job_time_limit(job_record_t *job_ptr, time_t now,
 			/* Job overlaps pending job's resource reservation */
 			resv_delay = difftime(node_space[j].begin_time, now);
 			resv_delay /= 60;	/* seconds to minutes */
-			if (resv_delay < job_ptr->time_limit)
-				job_ptr->time_limit = resv_delay;
+			if (resv_delay < new_time_limit)
+				new_time_limit = resv_delay;
 		}
 		if ((j = node_space[j].next) == 0)
 			break;
 	}
-	new_time_limit = MAX(job_ptr->time_min, job_ptr->time_limit);
+	new_time_limit = MAX(job_ptr->time_min, new_time_limit);
+	/*
+	 * acct_policy_alter_job() computes the usage to give back from
+	 * job_ptr->time_limit, so it must still hold the limit the usage was
+	 * booked against. Don't lower it above.
+	 */
 	acct_policy_alter_job(job_ptr, new_time_limit);
 	job_ptr->time_limit = new_time_limit;
 	job_ptr->end_time = job_ptr->start_time + (job_ptr->time_limit * 60);
@@ -4626,7 +4661,7 @@ static int _het_job_start_now(het_job_map_t *map, node_space_map_t *node_space)
 	het_job_rec_t *rec;
 	list_itr_t *iter;
 	int rc = SLURM_SUCCESS;
-	bool resv_overlap = false;
+	bool resv_overlap = false, resv_maint = false;
 	time_t now = time(NULL), start_res;
 	uint32_t hard_limit;
 	resv_exc_t resv_exc = { 0 };
@@ -4646,7 +4681,8 @@ static int _het_job_start_now(het_job_map_t *map, node_space_map_t *node_space)
 		 */
 		start_res = now;
 		rc = job_test_resv(job_ptr, &start_res, true, &avail_bitmap,
-				   &resv_exc, &resv_overlap, false);
+				   &resv_exc, &resv_maint, &resv_overlap,
+				   false);
 		reservation_delete_resv_exc_parts(&resv_exc);
 		if (rc != SLURM_SUCCESS) {
 			error("%pJ failed to start due to reservation",
@@ -4673,7 +4709,7 @@ static int _het_job_start_now(het_job_map_t *map, node_space_map_t *node_space)
 		resv_bitmap = avail_bitmap;
 		avail_bitmap = NULL;
 		bit_not(resv_bitmap);
-		rc = _start_job(job_ptr, resv_bitmap);
+		rc = _start_job(job_ptr, resv_bitmap, NULL);
 		FREE_NULL_BITMAP(resv_bitmap);
 		if (rc == SLURM_SUCCESS) {
 			/*

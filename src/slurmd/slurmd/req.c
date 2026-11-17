@@ -1105,6 +1105,12 @@ static int _check_job_credential(launch_tasks_request_msg_t *req,
 	if (!(arg = slurm_cred_verify(cred)))
 		return SLURM_ERROR;
 
+	if ((arg->uid != auth_uid) && !_slurm_authorized_user(auth_uid)) {
+		error("%s: Security violation: launch cred for uid %u but rpc from uid %u",
+		      __func__, arg->uid, auth_uid);
+		goto fail;
+	}
+
 	/* Check that the credential cache doesn't have any concerns. */
 	if (!cred_cache_valid(cred))
 		goto fail;
@@ -1466,6 +1472,7 @@ done:
 	} else if (errnum == SLURM_SUCCESS) {
 		save_cred_state();
 	}
+	xfree(errmsg);
 
 	/*
 	 *  If job prolog failed, indicate failure to slurmctld

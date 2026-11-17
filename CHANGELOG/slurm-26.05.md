@@ -1,3 +1,117 @@
+## Changes in 26.05.6
+
+* Fix a heterogeneous step started with --jobid=<array_job_id>_<task_id> failing with "Invalid job id specified" when the array task runs under its own job id.
+* slurmctld - With ignore_prefer_validation, fix issue when too few nodes satisfy a job's '--prefer' features where the job is held and not retried.
+* Fix slurmstepd crash on a job step create in an array task when stepmgr is enabled.
+* Fix slurmctld losing track of the nodes still completing a requeued job when a node in its allocation is removed from the configuration and slurmctld restarts, showing nodes as idle while they are still completing.
+* Fix a slurmd memory leak that occurred each time a task launch was rejected by the task plugin, such as for an invalid cpu bind.
+* mpi/pmix - Fix heterogeneous job steps intermittently hanging in a collective when a later component's nodes sort by name before an earlier component's nodes.
+* mpi/pmix - Fix heterogeneous job steps aborting with "Can't find address for host" or hanging when a dynamic, cloud or future node is allocated to a different component than other nodes in the step.
+* slurmctld - Fix Extra, InstanceId, InstanceType, and Topology not being applied from the registering slurmd when a node powers up.
+* Fixed node reboot/fail/drain Reason being erroneously cleared when a new job was allocated to a node with a pending reboot, drain, or fail request.
+* A node feature declared with Flags=rebootless in helpers.conf can now be activated without RebootProgram being configured.
+* slurmd - Fix forwarded RPCs hanging forever when an invalid message header values are sent, or when the slurmd is unable to start forwarding the RPC.
+* Fix bug that can reject a partition or account update on a job when AccountingStorageEnforce does not enforce associations and the job's user has no association.
+* acct_gather_interconnect/sysfs - Fix interconnect accounting reporting packet counts as bytes, network profiling InMB/OutMB values being sixteen times too large, and traffic being counted twice.
+* slurmctld - Fix crash on a malformed REQUEST_KILL_JOB RPC that carries no job id.
+* Fix SLURM_JOB_NODELIST and GRES environment variables being unset in the Epilog when slurmctld resends a job termination request, and naming the wrong node when it kills a job on a single node.
+* Fix GRES environment variables naming another node's devices in the Epilog when slurmctld aborts a job on a node.
+* slurmctld - Fix heterogeneous job components after the first not counting against QOS and association submit job limits (GrpSubmitJobs, MaxSubmitJobsPerUser, MaxSubmitJobsPerAccount and MaxSubmitJobs). The limits could be exceeded, and cancelling the job then dropped the count by every component. Regression in 26.05.0.
+* slurmctld - Fix a heterogeneous job submit of two or more components subtracting other jobs from QOS and association running job and TRES usage (GrpJobs, MaxJobsPerUser, GrpTRES), which allowed those limits to be exceeded. Regression in 26.05.0.
+* slurmctld - Fix a heterogeneous job rejected at submit by a QOS or association limit leaving the over-limit component pending as its own job, still holding a submit slot. Regression in 26.05.0.
+* slurmctld - Fix a heterogeneous job component submitted to several partitions losing its submit job count in the QOS of the partitions it does not run in. QOS submit job limits (GrpSubmitJobs, MaxSubmitJobsPerUser and MaxSubmitJobsPerAccount) could be exceeded. Regression in 26.05.0.
+* slurmctld - Fix a heterogeneous job submit leaving QOS running job and TRES usage (GrpJobs, MaxJobsPerUser, GrpTRES) charged when a component's job QOS is the partition QOS of another component, which could block jobs of that QOS until slurmctld restarted. Regression in 26.05.0.
+* slurmctld - Fix heterogeneous job submission not checking the sum of all components against the limits of parent associations. Regression in 26.05.0.
+* Fix jobs being allocated fewer GPUs than requested when RestrictedCoresPerGPU is configured.
+* sched/backfill - Emit the backfill "Started JobId=" log at debug level info again. This reverts a change added in 26.05.0rc1 that made the log guarded behind the Hetjob DebugFlag.
+* sacctmgr - Avoid possible crash due to malformed RPC statistics response from slurmdbd.
+* slurmrestd - Avoid possible crash due to malformed RPC statistics response from slurmdbd.
+* slurmctld - Prevent job owners from suspending and resuming their own jobs.
+* slurmctld - Fix a possible out-of-bounds write when a job's requested QOS list is changed.
+* Fix slurmd and slurmctld terminating when they parse a node list with more than 256K comma-separated ranges inside one pair of brackets.
+* pam_slurm_adopt - Fix action_unknown=newest sometimes adopting ssh sessions into a job other than the newest one when the user has multiple jobs on the node.
+* slurmctld - Fix a non-cloud node that was powering up during a slurmctld restart never being downed by ResumeTimeout if it failed to boot.
+* slurmctld - Fix a powering up node losing its InstanceId, InstanceType, Extra and Topology when scontrol update ran on it before slurmd registered.
+* mpi/pmix - Fix MPI_Abort() exit code not being reported by srun when TLS is enabled.
+* sched/backfill - Fix race in backfill that prevented the slurmctld from saving state on shutdown.
+* sched/backfill - Fix planning a preemptor job on different nodes than it will start on, which let lower priority jobs take its nodes and delay it.
+* slurmctld - Fix the jobs_wait_part_node_limit metric (partition_jobs_wait_part_node_limit in the openmetrics plugin) overcounting jobs pending for reasons other than a partition node limit, and counting jobs that are no longer pending.
+* Fix heterogeneous jobs not being requeued when the Prolog fails on one of their nodes.
+* slurmctld - Prevent a crash caused by a NULL pointer dereference if a running exclusive topology job's partition is removed during a restart or reconfigure.
+* slurmctld - Fix possible crash when a federation sibling connection closes right after it opens.
+* slurmctld - Fix crash when a federation sibling is removed while one of its job submissions is still queued.
+* slurmdbd - Fix slurmdbd hanging at startup, or when listing, adding, or modifying associations, when an account's parent account has no association on that cluster.
+* slurmdbd - Reject adding an account or association whose account, user, or partition name matches an existing one in its first 42 characters. Previously the add renamed the existing association.
+* Fix possible crash when encoding a large auth/slurm payload.
+* tls/s2n - Fix slurmd/sackd crash when a connection is closed while the node certificate is being renewed.
+
+## Changes in 26.05.5
+
+* qstat - Fix "-f" option aborting early and printing only part of the job record.
+* perlapi - Remove documentation for job_cpus_allocated_on_node() and job_cpus_allocated_on_node_id(), which no longer exist.
+* slurmd - Fix double free when packing an error response to slurmstepd fails.
+* slurmctld - Fix regression from 26.05 where powered down nodes configured with the default State=UNKNOWN would be placed into UNKNOWN+POWERED_DOWN or UNKNOWN+POWERING_DOWN on reconfigure or restart, where they would need to be manually powered back up.
+* Fix slurmd accepting a task launch credential from a user other than the user the credential was issued to.
+* Fix srun and sattach aborting when a connection to the step I/O port sends an invalid message length.
+* Fix srun and sattach using an uninitialized length when a TLS read fails while setting up step I/O.
+* Fix possible heap overflow in srun, sattach and slurmstepd from an invalid step I/O message length.
+* Fix a regression from 26.05.0 that would reject or hold task-count jobs against a partition's MaxNodes when they would fit within it.
+* slurmrestd - Fix out of bounds read when two `-d` arguments name the same data_parser version, such as `-d latest,v0.0.46`.
+* Fix invalid NodeAddr on dynamic future nodes.
+* slurmstepd - Fix a memory leak of job accounting data for each process that exits under a job step.
+* srun,slurmctld,slurmstepd - Fix a memory leak of the step launch state.
+* Fix scheduler starvation while repeatedly re-evaluating a --contiguous job that cannot fit.
+* Add alignment attribute to objcopy symbols to indicate potentially non-ABI compliant alignment of these symbols to the compiler.
+* slurmctld - Fix a memory leak when responding to job step info requests for jobs using stepmgr.
+* Fix a memory leak in Slurm clients when unpacking a job step info response for jobs using stepmgr fails.
+* Fix a memory leak in Slurm clients each time job step info is queried for a job using stepmgr.
+* slurmctld - Fix cloud nodes becoming permanently unschedulable after being resumed while powered down.
+* slurmctld - Fix issue where "scontrol create node" could delete a pre-existing dynamic node on failure.
+* slurmctld - Fix `scontrol create` leaving orphaned, partition-less nodes behind on a partial batch failure.
+* slurmctld - Fix "scontrol create node" leaking a configuration record when it could not create any of the requested nodes.
+* Fix --bcast (no specified path) for HetJobs fixing a regression starting with 25.11.0rc1.
+* Fix use-after-free causing srun --bcast-exclude to be applied incorrectly for all but the last component of a HetJob.
+* sbatch - Fix a regression added in 26.05.0rc1 so that sbatch waits for all array tasks to finish instead of just the last one.
+* metrics/openmetrics - Fix truncated values reported for the slurm_user_jobs_memory_alloc and slurm_account_jobs_memory_alloc metrics and for slurm_schedule_cycle_tot.
+* metrics/openmetrics - Fix slurm_jobs_cpus_alloc and slurm_jobs_nodes_alloc, and their per-user and per-account variants, wrapping on clusters with more than 65535 allocated CPUs or nodes.
+* metrics/openmetrics - Fix slurm_nodes and the slurm_nodes_* node state metrics wrapping on clusters with more than 65535 nodes.
+* metrics/openmetrics - Fix the slurm_partition_* CPU and node metrics wrapping on partitions with more than 65535 CPUs or nodes.
+* Fix job-scoped GPU requests (e.g. --gpus) combined with --segment never getting scheduled properly with topology/block and topology/torus3d. Requests where the GPU count is not divisible by the segment count are now rejected.
+* Fix TRESRunMins usage not being given back when the backfill scheduler lowers the time limit of a job submitted with --time-min.
+* Fix TRESRunMins usage skew when the QOS UsageFactor is modified while a job is running.
+* Fix TRESRunMins usage not given back correctly with PriorityType=priority/basic and a QOS UsageFactor other than 1.
+* slurmdbd - Fix association and wckey usage being permanently lost after fixing runaway jobs, or after a late job or cluster record or a manual sacctmgr rollup triggered a rerollup, which left per-account sreport totals short while cluster totals stayed correct.
+* slurmdbd - Refuse to fix runaway jobs while a usage rollup or archive is running instead of racing with it and losing usage. sacctmgr fails with "Usage rollup or archive in progress, retry later" and exits 1, so scripts that fix runaway jobs automatically must retry.
+* Fix sacctmgr WithSubAccounts selecting associations whose partition is named like the requested account.
+* Fix sreport cluster reports dropping the usage of users whose associations all have a partition.
+* OVERLAP+FLEX reservations will not take resources from reservations that are not overlapped by the first reservation.
+* Avoid printing error message about maintenance reservations when no maintenance reservations exist.
+* Fix an extra requeue after GraceTime with PreemptMode=REQUEUE where a restarted job that exited successfully was treated as preempted again.
+* slurmctld - Fix a requeue after a resize overwriting the resize accounting record.
+* accounting_storage/slurmdbd - Fix the slurmdbd agent queue blocking on a duplicate key error when a job is requeued after a resize.
+* Fix possible crash when decoding malformed base64url in a JWT or key file.
+* Fix slurmctld crash when expanding a running job with "scontrol update NumNodes=0" and either job has no licenses.
+* slurmctld - Fix crash in select/cons_tres when a job is submitted through the API with ntasks_per_socket=0.
+* Fix slurmctld crash when a job requesting GRES per socket is submitted through the API with a zero ntasks-per-socket.
+* Fix slurmctld crash when a job is submitted through the API with a zero ntasks-per-node.
+* slurmctld - Fix main scheduler ending its cycle early when more than one heterogeneous job component or job in a reservation fails to start in the same partition.
+* srun - Reject --async steps that request an MPI plugin through --mpi, SLURM_MPI_TYPE or MpiDefault.
+* topology/block - Break out of scheduling logic early for jobs requesting --segment when the available blocks cannot supply the requested segment count, with a tighter per-base-block check for --spread-segments.
+* Fix srun looping on new allocations when stopped and resumed.
+* slurmrestd - Fix query flags containing a space being silently ignored by '/slurmdb/*/association[s]' and '/slurmdb/*/qos'.
+* runtime/oci - Fix commands failing or being mis-parsed by the shell when an argument contains a single quote.
+* Fix memory corruption in slurmctld and slurmstepd for jobs or steps with one to three reserved ports.
+* Fix slurmctld crash on restart when shared GRES topology was removed from a node with a running job.
+* Fail recovered jobs cleanly when their allocated shared GRES topology no longer exists on a node.
+* slurmdbd - Fix a use-after-free that could crash slurmdbd when it was stopped with "sacctmgr shutdown", and send sacctmgr its reply.
+* sacctmgr - Don't print errors after a successful "sacctmgr shutdown".
+* Fix clearing the requested GRES of a pending job when it is updated to a zero count.
+* slurmd - Fix heap corruption and possible crash when a forwarded RPC fails to unpack while forwarding to unresponsive nodes.
+* Fix regression from 26.05 that skipped bf_busy_nodes, least-loaded node, and pack_serial_at_end scheduling logic for single-node jobs.
+* Fix reservation updates being rejected because of a job that had already lost access to the reservation.
+* slurmctld - Fix bug with a requeued job that is sent an accounting update while its epilog runs. The requeued instance would overwrite details of the previous run in the database.
+* slurmctld - Avoid sending redundant accounting updates for requeued array tasks waiting on the array task limit, which could flood slurmdbd with DBD_JOB_START messages.
+
 ## Changes in 26.05.4
 
 * slurmctld - Fix double-free when a job partition, QOS, or account update request fails for a job in a reservation.

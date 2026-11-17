@@ -126,7 +126,6 @@ normally not be. Sorting and formatting arguments passed to other options are
 ignored; however, most filtering arguments are still used. This option is not
 available for every command.
 This option implicitly sets the \fB\-\-details\fR option.
-
 .IP
 
 .SH "COMMANDS"
@@ -660,6 +659,7 @@ threads\-per\-core then it will display '*' in the ReqS:C:T=*:*:* field.
 Displays statistics about all configured licenses (local and remote) by
 default. If an optional license name is specified, details for just that
 license will be displayed.
+.IP
 
 .TP
 \fBnode\fR
@@ -991,6 +991,9 @@ Arbitrary descriptive string.
 Set the job's requirement for contiguous (consecutive) nodes to be allocated.
 Possible values are "YES" and "NO".
 Only a privileged user can change this parameter to "YES".
+
+\fBNOTE\fR: Whether this requirement is honored depends on the topology
+plugin. See the \fB\-\-contiguous\fR option in \fBsbatch\fR(1).
 .IP
 
 .TP
@@ -1685,8 +1688,12 @@ current time limit, the \fIStepId\fP specification must precede the
 .SH "NODES \- SPECIFICATIONS FOR CREATE COMMAND"
 
 Provide the same NodeName configuration as found in the slurm.conf. See
-slurm.conf man page for details. Only State=CLOUD and State=FUTURE nodes are
-allowed.
+slurm.conf man page for details. Only State=CLOUD, State=EXTERNAL and
+State=FUTURE nodes are allowed.
+Creation is all\-or\-nothing. If any node in the request cannot be created, the
+command fails, no node from the request is created, and every node that already
+existed \- whether created dynamically or defined in slurm.conf \- is left
+unchanged.
 
 .SH "NODES \- SPECIFICATIONS FOR UPDATE COMMAND"
 
@@ -1834,6 +1841,9 @@ slurmctld will then attempt to contact slurmd to request that the node
 register itself.
 
 \fBNOTE\fR: A value of \-1 will unschedule the node state resume.
+
+\fBNOTE\fR: The same \fB\%POWERED_DOWN\fR and \fB\%POWERING_DOWN\fR behavior
+described under \fBRESUME\fR (below) applies.
 .IP
 
 .TP
@@ -1875,17 +1885,25 @@ at some point in the future.
 
 .TP
 \fBIDLE\fR
-Will clear \fBDOWN\fR, \fBDRAIN\fR and \fBFAIL\fR states.
-Will set the state to \fBIDLE\fR and \fBNoResp\fR. slurmctld will then
-attempt to contact slurmd to request that the node register itself.
-Once registered, the node state will then remove the \fBNoResp\fR flag and
-will resume normal operations.
+Will clear \fBDOWN\fR, \fBDRAIN\fR and \fBFAIL\fR states and set the base
+state to \fBIDLE\fR.
+Unlike \fBRESUME\fR, this does not set \fBNoResp\fR and does not request that
+the node register itself.
+A node that already has the \fBNoResp\fR flag set does not become eligible to
+be allocated until it registers, unless it is \fB\%POWERED_DOWN\fR.
+\fB\%POWERING_DOWN\fR is not an exception here; such a node stays ineligible
+until it finishes powering down.
 .IP
 
 .TP
 \fBNoResp\fR
 This will set the "Not Responding" flag for a node without changing its
 underlying state.
+
+\fBNOTE\fR: On a node that is \fB\%POWERED_DOWN\fR or \fB\%POWERING_DOWN\fR
+this flag is cleared when slurmctld next reads its saved state on a reconfigure
+or a restart. Such a node cannot register while it is powered down, so a flag
+that persisted there would keep it out of the available nodes for good.
 .IP
 
 .TP
@@ -1896,15 +1914,28 @@ slurmctld will then attempt to contact slurmd to request that the node
 register itself. Once registered, the node state will then remove the
 \fBNoResp\fR flag and will resume normal operations. It will also clear the
 \fBPOWERING_DOWN\fR state of a node and make it eligible to be allocated.
+
+\fBNOTE\fR: This does not set \fBNoResp\fR on a node that is
+\fB\%POWERED_DOWN\fR or \fB\%POWERING_DOWN\fR. Such a node is neither pinged nor
+able to register while it is powered down, so the flag would persist and keep
+the node out of the available nodes. The node is still required to register
+when it powers up.
 .IP
 
 .TP
 \fBUNDRAIN\fR
 Clears the node from being drained (like \fBRESUME\fR), but will
-not change the node's base state (e.g. \fBDOWN\fR). \fBUNDRAIN\fR requires a
+not change the node's base state (e.g. \fBDOWN\fR). For a node that is not
+\fB\%POWERED_DOWN\fR or \fB\%POWERING_DOWN\fR, \fBUNDRAIN\fR requires a
 valid node registration before new jobs can be scheduled on the node.
-Setting a node \fBDOWN\fR will cause all running and suspended jobs on that
-node to be terminated.
+Setting a node \fBDOWN\fR will cause all running and suspended jobs on
+that node to be terminated.
+
+\fBNOTE\fR: As with \fBRESUME\fR, this does not set \fBNoResp\fR on a node
+that is \fB\%POWERED_DOWN\fR or \fB\%POWERING_DOWN\fR. A \fB\%POWERED_DOWN\fR
+node whose base state is \fBIDLE\fR is then eligible to be allocated; the
+scheduler will power it up and registration will follow. A
+\fB\%POWERING_DOWN\fR node is not eligible until it finishes powering down.
 .RE
 .IP
 
@@ -1955,11 +1986,21 @@ CPU load of a node as reported by the OS.
 \fBCPUSpecList\fR
 The list of Slurm abstract CPU IDs on this node reserved for
 exclusive use by the Slurm compute node daemons (slurmd, slurmstepd).
+These are indices in Slurm's per-node CPU numbering, which may not match
+the CPU IDs used by the operating system.
 .IP
 
 .TP
 \fBFreeMem\fR
 The total memory, in MiB, currently free on the node as reported by the OS.
+.IP
+
+.TP
+\fBGresUsed\fR
+The generic resources on the node that are currently allocated to jobs.
+Only displayed with the \fB\-d\fR, \fB\-\-details\fR option.
+For shared GRES (\fBshard\fR or \fBmps\fR) usage syntax, see
+<https://slurm.schedmd.com/gres.html#Shared_GRES_Usage>.
 .IP
 
 .TP
@@ -2420,7 +2461,7 @@ requested to power down upon becoming IDLE. A power down request prevents
 further scheduling to the node until it has been put into power save mode by
 \fBSuspendProgram\fR.
 
-Also see \fBSuspendTime\fR.
+See \fBslurm.conf\fR(5) for more information. Also see \fBSuspendTime\fR.
 .IP
 
 .TP
@@ -2657,6 +2698,20 @@ forcing jobs requesting the reservation to use those resources in the time
 frame reserved. Another use case could be to always have a particular number of
 nodes with a specific feature reserved for a specific account so users in this
 account may use this nodes plus possibly other nodes without this feature.
+
+Unless this reservation also has the \fBMAINT\fR flag, resources held by other
+reservations are still off limits. A reservation that reserves whole nodes
+keeps those nodes excluded, unless this reservation also has the \fBOVERLAP\fR
+flag and the nodes belong to both reservations. When the other reservation
+reserves only part of each node, its reserved cores are excluded instead of its
+nodes, so a job may still be allocated the unreserved cores on those nodes.
+\fBOVERLAP\fR never grants access to another reservation that has the
+\fBMAINT\fR flag: if it reserves whole nodes those nodes stay excluded, and if
+it reserves only part of each node its reserved cores do. A
+reservation that holds no nodes of its own (a license or burst buffer
+reservation created with \fBANY_NODES\fR) and that also has the \fBOVERLAP\fR
+flag keeps the full \fBOVERLAP\fR grant: its jobs may use any node that is not
+in a \fBMAINT\fR reservation.
 .IP
 
 .TP
@@ -2708,7 +2763,15 @@ is gone. Flag removal with '\-=' is not supported.
 .TP
 \fBOVERLAP\fR
 This reservation can be allocated resources that are already in another
-reservation. Flag removal with '\-=' is not supported.
+reservation. Resources held by a reservation with the \fBMAINT\fR flag are the
+exception: the whole nodes it reserves, or the cores it reserves on partial
+nodes, stay excluded with or without \fBFLEX\fR. When combined with the
+\fBFLEX\fR flag, jobs requesting this reservation may use another reservation's
+whole nodes only if those nodes belong to both reservations; see \fBFLEX\fR for
+reservations that reserve only part of each node. That last
+restriction does not apply when this reservation holds no nodes of its own
+(see \fBANY_NODES\fR), in which case its jobs may use any node outside a
+\fBMAINT\fR reservation. Flag removal with '\-=' is not supported.
 .IP
 
 .TP
@@ -3196,8 +3259,8 @@ Slurm generally classifies users into three authorization levels:
 "AdminLevel=Administrator"
  - \fBPrivileged Users\fR include all Administrators and any users with
 "AdminLevel=Operator"
- - \fBEffective Owners\fR of a job or step include the direct owner and all
-Coordinators of the corresponding account.
+ - \fBEffective Owners\fR of a job or step include the direct owner and the
+\fBCoordinators\fR of the job's account.
 
 Note that configuring AdminLevels or Coordinators requires the use of SlurmDBD.
 The authorization levels required to execute various commands are defined in the
@@ -3208,6 +3271,12 @@ following table.
 \fBscontrol requeue:           \fR Privileged or Effective Owner
 .br
 \fBscontrol update step:       \fR Privileged or Effective Owner
+.br
+\fBscontrol hold:              \fR Privileged or Effective Owner
+.br
+\fBscontrol uhold:             \fR Privileged or Effective Owner
+.br
+\fBscontrol release:           \fR Privileged or Effective Owner
 .br
 \fBscontrol suspend:           \fR Privileged or Coordinator
 .br

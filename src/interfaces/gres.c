@@ -3104,6 +3104,40 @@ fini:
 	return rc;
 }
 
+static int _copy_gres_slurmd_conf(void *x, void *arg)
+{
+	gres_slurmd_conf_t *src = x, *dst = xmalloc(sizeof(*dst));
+	list_t *copy = arg;
+
+	*dst = *src;
+	dst->cpus = xstrdup(src->cpus);
+	if (src->cpus_bitmap)
+		dst->cpus_bitmap = bit_copy(src->cpus_bitmap);
+	dst->file = xstrdup(src->file);
+	dst->links = xstrdup(src->links);
+	dst->name = xstrdup(src->name);
+	dst->type_name = xstrdup(src->type_name);
+	dst->unique_id = xstrdup(src->unique_id);
+	list_append(copy, dst);
+
+	return 0;
+}
+
+extern list_t *gres_get_node_conf_list(void)
+{
+	list_t *copy = NULL;
+
+	slurm_mutex_lock(&gres_context_lock);
+	if (gres_conf_list) {
+		copy = list_create(destroy_gres_slurmd_conf);
+		(void) list_for_each(gres_conf_list, _copy_gres_slurmd_conf,
+				     copy);
+	}
+	slurm_mutex_unlock(&gres_context_lock);
+
+	return copy;
+}
+
 /*
  * Pack this node's gres configuration into a buffer
  * IN/OUT buffer - message buffer to pack
@@ -7079,6 +7113,7 @@ extern int gres_job_state_validate(gres_job_state_validate_t *gres_js_val)
 				cnt *= (*gres_js_val->min_nodes *
 					*gres_js_val->sockets_per_node);
 			} else if ((*gres_js_val->num_tasks != NO_VAL) &&
+				   *gres_js_val->ntasks_per_socket &&
 				   (*gres_js_val->ntasks_per_socket !=
 				    NO_VAL16)) {
 				cnt *= ROUNDUP(*gres_js_val->num_tasks,
@@ -7308,6 +7343,7 @@ static int _find_invalid_job_gres_on_node(void *x, void *arg)
 	gres_job_state_t *gres_js = gres_state_job->gres_data;
 	validate_job_gres_cnt_t *validate_job_gres_cnt = arg;
 	gres_state_t *gres_state_node;
+	gres_node_state_t *gres_ns;
 	uint32_t plugin_id;
 	int job_gres_cnt, node_gres_cnt = 0;
 
@@ -7329,11 +7365,10 @@ static int _find_invalid_job_gres_on_node(void *x, void *arg)
 					       node_gres_list,
 					       gres_find_id,
 					       &plugin_id))) {
-		gres_node_state_t *gres_ns = gres_state_node->gres_data;
+		gres_ns = gres_state_node->gres_data;
 		node_gres_cnt = (int) gres_ns->gres_cnt_config;
 		if (gres_js->type_id) {
 			bool found_type = false;
-			gres_node_state_t *gres_ns = gres_state_node->gres_data;
 
 			for (int i = 0; i < gres_ns->type_cnt; i++) {
 				if (gres_ns->type_id[i] == gres_js->type_id) {
@@ -7361,6 +7396,51 @@ static int _find_invalid_job_gres_on_node(void *x, void *arg)
 		      validate_job_gres_cnt-> node_name,
 		      job_gres_cnt, node_gres_cnt);
 		return 1;
+	}
+
+	/*
+	 * Shared GRES bitmaps (e.g. shard and mps) are sized by the backing GPU
+	 * count. That check alone is insufficient when the shared GRES topology
+	 * is removed while GPUs remain: require the shared topology itself
+	 * still exist and cover the job's bits.
+	 */
+	if (gres_id_shared(gres_state_job->config_flags)) {
+		uint64_t old_avail_cnt = 0;
+		bool kill_job = false;
+
+		gres_ns = NULL;
+
+		/* Get the shared gres state */
+		gres_state_node =
+			list_find_first(validate_job_gres_cnt->node_gres_list,
+					gres_find_id,
+					&gres_state_job->plugin_id);
+		if (gres_state_node)
+			gres_ns = gres_state_node->gres_data;
+
+		/*
+		 * If the shared gres state no longer exist or the topology does
+		 * not match what is expected then kill the job.
+		 */
+		if (!gres_ns || (gres_ns->topo_cnt != job_gres_cnt) ||
+		    !gres_ns->topo_gres_cnt_avail) {
+			kill_job = true;
+		} else {
+			/* topo_* vars wait to update until node registration */
+			for (int i = 0; i < gres_ns->topo_cnt; i++)
+				old_avail_cnt +=
+					gres_ns->topo_gres_cnt_avail[i];
+			if (gres_ns->gres_cnt_config < old_avail_cnt)
+				kill_job = true;
+		}
+
+		if (kill_job) {
+			error("%s: Killing job %u: gres/%s topology missing or reduced on node %s",
+			      __func__, validate_job_gres_cnt->job_id,
+			      gres_state_job->gres_name,
+			      validate_job_gres_cnt->node_name);
+			return 1;
+		}
 	}
 
 	return 0;
@@ -10810,6 +10890,7 @@ static int _foreach_gres_init(void *x, void *arg)
 	if (!gres_js->gres_per_job)
 		return 0;
 	gres_js->total_gres = 0;
+	gres_js->gres_per_job_segment = 0;
 	*rc = true;
 
 	return 0;
@@ -10829,6 +10910,54 @@ extern bool gres_sched_init(list_t *job_gres_list)
 	(void) list_for_each(job_gres_list, _foreach_gres_init, &rc);
 
 	return rc;
+}
+
+static int _foreach_gres_reset(void *x, void *arg)
+{
+	gres_state_t *gres_state_job = x;
+	gres_job_state_t *gres_js = gres_state_job->gres_data;
+
+	if (gres_js->gres_per_job)
+		gres_js->total_gres = 0;
+
+	return 0;
+}
+
+extern void gres_sched_reset(list_t *job_gres_list)
+{
+	if (!job_gres_list)
+		return;
+
+	(void) list_for_each(job_gres_list, _foreach_gres_reset, NULL);
+}
+
+static int _foreach_gres_segment_set(void *x, void *arg)
+{
+	gres_state_t *gres_state_job = x;
+	gres_job_state_t *gres_js = gres_state_job->gres_data;
+	int segment_cnt = *(int *) arg;
+
+	if (!gres_js->gres_per_job)
+		return 0;
+	/*
+	 * On rejection (<0) earlier entries keep a non-zero
+	 * gres_per_job_segment, but the caller aborts the evaluation and the
+	 * next gres_sched_init() clears it before it can be used.
+	 */
+	if (gres_js->gres_per_job % segment_cnt)
+		return -1; /* Not evenly divisible */
+	gres_js->gres_per_job_segment = gres_js->gres_per_job / segment_cnt;
+
+	return 0;
+}
+
+extern bool gres_sched_segment_set(list_t *job_gres_list, int segment_cnt)
+{
+	if (!job_gres_list || (segment_cnt <= 1))
+		return true;
+
+	return (list_for_each(job_gres_list, _foreach_gres_segment_set,
+			      &segment_cnt) >= 0);
 }
 
 /*

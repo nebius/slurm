@@ -120,11 +120,28 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Download every shard artifact
+      - name: Download the shard artifacts of every attempt
         uses: actions/download-artifact@v8
         with:
-          pattern: slurm-atf-shard-${{ inputs.run_kind }}-${{ github.run_id }}-${{ github.run_attempt }}-*
-          path: shard-results
+          pattern: slurm-atf-shard-${{ inputs.run_kind }}-${{ github.run_id }}-*
+          path: shard-artifacts
+
+      # A partial rerun keeps the artifacts of shards that passed in an earlier
+      # attempt, and a shard that failed there has an artifact in both attempts.
+      - name: Keep the latest attempt of every shard
+        run: |
+          set -euo pipefail
+          prefix="slurm-atf-shard-${{ inputs.run_kind }}-${GITHUB_RUN_ID}-"
+          mkdir -p shard-artifacts shard-results
+          find shard-artifacts -mindepth 1 -maxdepth 1 -type d -name "${prefix}*" -print |
+            sed -E "s|^shard-artifacts/${prefix}([0-9]+)-(.+)$|\2 \1|" |
+            sort -k1,1 -k2,2n |
+            awk '{latest[$1] = $2} END {for (shard in latest) print shard, latest[shard]}' |
+            sort |
+            while read -r shard attempt; do
+              mv "shard-artifacts/${prefix}${attempt}-${shard}" shard-results/
+              echo "- Shard \`${shard}\`: attempt \`${attempt}\`" >>"${GITHUB_STEP_SUMMARY}"
+            done
 
       - id: aggregation
         name: Require complete disjoint coverage and merge JUnit

@@ -6,6 +6,8 @@ applies_to:
   - all-supported-releases
 depends_on: []
 upstream: downstream-only
+implementation:
+  - https://github.com/nebius/slurm/pull/23
 ---
 
 # NB-0001: Sync documentation, tests, and CI workflows from master

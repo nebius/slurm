@@ -253,14 +253,22 @@ jobs:
         run: |
           set -euo pipefail
           prefix="slurm-atf-patch-tests-${GITHUB_RUN_ID}-"
-          attempt="$(
-            find patch-artifacts -mindepth 1 -maxdepth 1 -type d -name "${prefix}*-gpu" -print |
-              sed -E "s|^patch-artifacts/${prefix}([0-9]+)-gpu$|\1|" |
-              sort -n |
-              tail -n 1
-          )"
-          [[ "${attempt}" =~ ^[0-9]+$ ]]
-          mv "patch-artifacts/${prefix}${attempt}-gpu" patch-evidence
+          if [[ -s patch-artifacts/run-metadata.json ]]; then
+            # download-artifact extracts a single matching artifact straight
+            # into the target path; only several matches get a directory each.
+            attempt="$(jq -er '.workflow.run_attempt' patch-artifacts/run-metadata.json)"
+            [[ "${attempt}" =~ ^[0-9]+$ ]]
+            mv patch-artifacts patch-evidence
+          else
+            attempt="$(
+              find patch-artifacts -mindepth 1 -maxdepth 1 -type d -name "${prefix}*-gpu" -print |
+                sed -E "s|^patch-artifacts/${prefix}([0-9]+)-gpu$|\1|" |
+                sort -n |
+                tail -n 1
+            )"
+            [[ "${attempt}" =~ ^[0-9]+$ ]]
+            mv "patch-artifacts/${prefix}${attempt}-gpu" patch-evidence
+          fi
           echo "attempt=${attempt}" >>"${GITHUB_OUTPUT}"
 
       - id: comparison

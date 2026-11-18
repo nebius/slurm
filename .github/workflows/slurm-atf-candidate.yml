@@ -241,11 +241,35 @@ jobs:
           name: ${{ needs.run.outputs.artifact_name }}
           path: candidate-evidence
 
-      - name: Download validated patch-test evidence
+      - name: Download the patch-test evidence of every attempt
         uses: actions/download-artifact@v8
         with:
-          name: slurm-atf-patch-tests-${{ github.run_id }}-${{ github.run_attempt }}-gpu
-          path: patch-evidence
+          pattern: slurm-atf-patch-tests-${{ github.run_id }}-*-gpu
+          path: patch-artifacts
+
+      # After a partial rerun the GPU shard may have passed in an earlier attempt.
+      - id: patch_evidence
+        name: Keep the latest validated patch-test evidence
+        run: |
+          set -euo pipefail
+          prefix="slurm-atf-patch-tests-${GITHUB_RUN_ID}-"
+          if [[ -s patch-artifacts/run-metadata.json ]]; then
+            # download-artifact extracts a single matching artifact straight
+            # into the target path; only several matches get a directory each.
+            attempt="$(jq -er '.workflow.run_attempt' patch-artifacts/run-metadata.json)"
+            [[ "${attempt}" =~ ^[0-9]+$ ]]
+            mv patch-artifacts patch-evidence
+          else
+            attempt="$(
+              find patch-artifacts -mindepth 1 -maxdepth 1 -type d -name "${prefix}*-gpu" -print |
+                sed -E "s|^patch-artifacts/${prefix}([0-9]+)-gpu$|\1|" |
+                sort -n |
+                tail -n 1
+            )"
+            [[ "${attempt}" =~ ^[0-9]+$ ]]
+            mv "patch-artifacts/${prefix}${attempt}-gpu" patch-evidence
+          fi
+          echo "attempt=${attempt}" >>"${GITHUB_OUTPUT}"
 
       - id: comparison
         name: Validate provenance and compare JUnit reports
@@ -325,7 +349,7 @@ jobs:
           test "$(jq -er '.workflow.run_id' "${patch_metadata}")" = \
             "${GITHUB_RUN_ID}"
           test "$(jq -er '.workflow.run_attempt' "${patch_metadata}")" = \
-            "${GITHUB_RUN_ATTEMPT}"
+            "${{ steps.patch_evidence.outputs.attempt }}"
           test "$(jq -er '.selection.policy' "${patch_metadata}")" = \
             changed-files-on-h200-v1
           test "$(jq -er '.selection.sha256' "${patch_metadata}")" = \

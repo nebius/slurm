@@ -1,15 +1,25 @@
 ---
 id: NB-0002
 title: Fix node dropped from blocks_nodes_bitmap in topology/block
-status: active
+status: upstream
 applies_to:
   - nebius/26.05
 depends_on:
   - NB-0001
-upstream: not-submitted
+upstream: 26.05.6
+implementation:
+  - https://github.com/nebius/slurm/pull/27
 ---
 
 # NB-0002: Fix node dropped from blocks_nodes_bitmap in topology/block
+
+Upstream since Slurm 26.05.6. The change was submitted as
+[SchedMD/slurm#225](https://github.com/SchedMD/slurm/pull/225) and landed in
+`slurm-26.05` as commits `a8fc01ec21` (restore the aggregate bit) and
+`71543e9209` (recompute `blocks_nodes_cnt`). Starting with
+`slurm-26-05-6-nebius-1`, `nebius/26.05` carries the upstream version of
+`topology_block.c` and no downstream change. Do not port this patch to release
+lines based on 26.05.6 or later.
 
 ## Summary
 
@@ -70,8 +80,8 @@ Not included:
   validation; upstream commit `bde6000c42` moved it after validation in
   `26.05` and `master`. That reordering fixes a different bug and does not
   affect this patch, but the surrounding context differs between releases.
-- If upstream accepts the change, mark this entry `upstream since <release>`
-  and drop the commit when the oldest supported release contains it.
+- Upstream contains the change since 26.05.6. Port the downstream commit only
+  to a release line based on an older Slurm release.
 
 ## Validation
 
@@ -106,3 +116,7 @@ Not included:
 - Initial specification for `nebius/26.05`. Bug present in all releases
   examined, from 25.11.3 through 26.05.3 and upstream `master`; not fixed
   upstream at the time of writing.
+- 2026-09-18: Submitted upstream as SchedMD/slurm#225.
+- 2026-11-17: Dropped from `nebius/26.05` during the sync with upstream (#64)
+  26.05.6, which contains the same fix. The regression test
+  `test_nb_0002_topology_block.py` stays in the release branch.

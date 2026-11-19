@@ -7,6 +7,8 @@ applies_to:
 depends_on:
   - NB-0001
 upstream: not-submitted
+implementation:
+  - https://github.com/nebius/slurm/pull/31
 ---
 
 # NB-0003: Add node reboot operations to the Slurm REST API

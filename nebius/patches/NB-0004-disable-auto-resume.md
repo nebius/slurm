@@ -7,6 +7,8 @@ applies_to:
 depends_on:
   - NB-0001
 upstream: not-submitted
+implementation:
+  - https://github.com/nebius/slurm/pull/36
 ---
 
 # NB-0004: Disable automatic resume for selected nodes

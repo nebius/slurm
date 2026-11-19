@@ -23,7 +23,11 @@ Required metadata:
 - `applies_to`: supported downstream release branches;
 - `depends_on`: patch identifiers that must be applied first;
 - `upstream`: upstream issue/PR URL, `not-submitted`, `downstream-only`, or
-  the release that contains the change.
+  the release that contains the change;
+- `implementation`: URLs of the pull requests in this repository that
+  introduced the patch, ported it to another release line, or materially
+  reworked it. Add the pull request that creates the specification, and
+  append one entry for every later port or rework.
 
 Required sections:
 

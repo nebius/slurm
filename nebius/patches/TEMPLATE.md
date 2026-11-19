@@ -6,6 +6,7 @@ applies_to:
   - nebius/XX.YY
 depends_on: []
 upstream: not-submitted
+implementation: []
 ---
 
 # NB-XXXX: Short patch title
